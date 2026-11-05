@@ -12,6 +12,7 @@ at every frame, not just at the endpoints.
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -149,3 +150,42 @@ class FocusTimeline:
         ]
         radii = layout(widths, self._gap, self._outer_r)
         return FocusFrame(widths=widths, radii=radii, factors=factors)
+
+
+def progress_track(
+    t: float,
+    targets: Sequence[Sequence[float]],
+    *,
+    interval_s: float,
+    tween_s: float,
+    ease=ease_out_cubic,
+) -> list[float]:
+    """Current per-ring progress at global time ``t``.
+
+    ``targets`` is indexed [interval_index][ring_index]; each interval lasts
+    ``interval_s`` seconds and values ease from the previous interval's value to the
+    current interval's value over ``tween_s`` seconds at the start of the interval.
+    """
+    if t < 0:
+        return list(targets[0])
+    tween_s = min(tween_s, interval_s)
+    idx = int(t // interval_s)
+    idx = min(idx, len(targets) - 1)
+    t_in = t - idx * interval_s
+    k = min(1.0, t_in / tween_s) if tween_s > 0 else 1.0
+    prev = targets[idx - 1] if idx > 0 else targets[idx]
+    curr = targets[idx]
+    return [prev[r] + (curr[r] - prev[r]) * ease(k) for r in range(len(curr))]
+
+
+def seed_progress_targets(
+    n_intervals: int,
+    n_rings: int,
+    seed: int,
+    uplim: float = 2.0,
+) -> list[list[float]]:
+    """Per-interval per-ring random progress targets (``uniform(0, uplim)``)."""
+    rng = random.Random(seed)
+    return [
+        [rng.uniform(0.0, uplim) for _ in range(n_rings)] for _ in range(n_intervals)
+    ]

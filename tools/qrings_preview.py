@@ -54,6 +54,9 @@ from activityrings.rings_focus import (  # noqa: E402
     TRANSITION_S,
     FocusTimeline,
     default_schedule,
+    layout,
+    progress_track,
+    seed_progress_targets,
 )
 
 OUT = REPO / "docs" / "rings_focus"
@@ -101,6 +104,8 @@ class RingItem(QGraphicsObject):
         self._start = start_angle
         self._direction = direction
         self._target = target
+        self._progress = float(target)
+        self._rotation = 0.0
         self._sweep = 360.0 * target
         self._focus_color = qcolor(focus_color or DEFAULT_FOCUS_COLOR)
         self._focus_level = 0.0
@@ -169,17 +174,51 @@ class RingItem(QGraphicsObject):
 
     focus_level = Property(float, _get_focus_level, _set_focus_level)
 
+    def _get_progress(self) -> float:
+        return self._progress
+
+    def _set_progress(self, value: float) -> None:
+        value = float(max(0.0, min(value, 2.0)))
+        if value == self._progress:
+            return
+        self._progress = value
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def _get_rotation(self) -> float:
+        return self._rotation
+
+    def _set_rotation(self, value: float) -> None:
+        value = float(value)
+        if value == self._rotation:
+            return
+        self._rotation = value
+        self.update()
+
+    rotation = Property(float, _get_rotation, _set_rotation)
+
+    def _get_direction(self) -> str:
+        return self._direction
+
+    direction = Property(str, _get_direction)
+
     def boundingRect(self) -> QRectF:
         m = self._r + self._w
         return QRectF(-m, -m, 2 * m, 2 * m)
 
     def set_sweep(self, fraction: float) -> None:
-        self._sweep = 360.0 * max(0.0, min(fraction, 1.0))
+        frac = max(0.0, min(fraction, 1.0))
+        self._sweep = 360.0 * frac
+        self._progress = frac
         self.update()
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing, True)
-        g = QConicalGradient(QPointF(0, 0), self._start)
+        sign = -1.0 if self._direction == "clockwise" else 1.0
+        base = self._start + self._rotation
+        base_sweep = 360.0 * min(1.0, self._progress)
+        g = QConicalGradient(QPointF(0, 0), base)
         g.setColorAt(0.0, self._color.lighter(118))
         g.setColorAt(0.12, self._color)
         g.setColorAt(0.85, self._color.darker(96))
@@ -189,8 +228,14 @@ class RingItem(QGraphicsObject):
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
         rect = QRectF(-self._r, -self._r, 2 * self._r, 2 * self._r)
-        span = -self._sweep if self._direction == "clockwise" else self._sweep
-        painter.drawArc(rect, int(self._start * 16), int(span * 16))
+        painter.drawArc(rect, int(base * 16), int(sign * base_sweep * 16))
+        if self._progress > 1.0:
+            over_sweep = 360.0 * (self._progress - 1.0)
+            op = QPen(self._color.lighter(150), self._w)
+            op.setCapStyle(Qt.RoundCap)
+            op.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(op)
+            painter.drawArc(rect, int(base * 16), int(sign * over_sweep * 16))
         if self._focus_level > 0.0:
             self._paint_focus(painter)
 
@@ -207,9 +252,10 @@ class RingItem(QGraphicsObject):
 
         ri = self._r - self._w / 2.0
         ro = self._r + self._w / 2.0
-        a0 = self._start
         sign = -1.0 if self._direction == "clockwise" else 1.0
-        a1 = a0 + sign * self._sweep
+        base = self._start + self._rotation
+        a0 = base
+        a1 = base + sign * self._sweep
         cap_span = sign * 180.0
 
         outer_rect = QRectF(-ro, -ro, 2 * ro, 2 * ro)
@@ -267,12 +313,16 @@ def build_focus_rings(
     start_angle: float | None = None,
     direction: str = "clockwise",
 ) -> list[RingItem]:
+    # True concentric base geometry: the gap-preserving centerline radii the timeline
+    # produces for the base widths. The focus demo overrides these per frame anyway;
+    # the progress/spin clip relies on them to keep the three rings concentric.
+    widths = [base.width_frac * OUTER_R for base in BASE_RINGS]
+    radii = layout(widths, GAP_FRACTION * OUTER_R, OUTER_R)
     rings: list[RingItem] = []
-    for base in BASE_RINGS:
-        r = base.width_frac * OUTER_R
+    for base, w, r in zip(BASE_RINGS, widths, radii, strict=True):
         item = RingItem(
             r,
-            r,
+            w,
             base.color,
             base.start_angle if start_angle is None else start_angle,
             base.target,
@@ -421,6 +471,110 @@ def render_focus_cases(
             scene, rings, timeline, case_dir, focus_color=focus_color, background=background
         )
         print(f"OK rendered {len(frames)} frames for {name} (start={start_angle:.0f}, {direction})")
+    return cases
+
+
+def render_progress_clip(
+    scene: QGraphicsScene,
+    rings: list[RingItem],
+    out_dir: Path,
+    *,
+    duration_ms: float = 300.0,
+    spin_period_s: float = 4.0,
+    value_interval_s: float = 2.0,
+    fps: int = FPS,
+    start_t: float = 0.0,
+    end_t: float = DURATION,
+    focus_color: tuple[int, int, int] | None = None,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
+    seed: int = 0,
+    uplim: float = 2.0,
+) -> tuple[list[QImage], float, float]:
+    """Render a value-change tween + continuous-spin progress clip.
+
+    Per-ring progress comes from ``progress_track`` over seeded interval targets
+    (``duration_ms``/1000 is the value-change tween length); each ring also spins
+    continuously with period ``spin_period_s``.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = int(round((end_t - start_t) * fps)) + 1
+    n_intervals = int(math.ceil(end_t / value_interval_s)) + 1
+    targets = seed_progress_targets(n_intervals, len(rings), seed, uplim=uplim)
+    frames: list[QImage] = []
+    for i in range(n):
+        t = start_t + i / fps
+        vals = progress_track(
+            t, targets, interval_s=value_interval_s, tween_s=duration_ms / 1000.0
+        )
+        for r, item in enumerate(rings):
+            item.progress = vals[r]
+            item.rotation = (
+                -1.0 if item.direction == "clockwise" else 1.0
+            ) * (t / spin_period_s) * 360.0
+        scene.update()
+        img = render(SIZE, scene, focus_color=focus_color, background=background)
+        frames.append(img)
+        img.save(str(out_dir / f"frame_{i:03d}.png"))
+    return frames, start_t, fps
+
+
+def render_progress_cases(
+    out_dir: Path,
+    *,
+    duration_ms: float = 300.0,
+    spin_period_s: float = 4.0,
+    value_interval_s: float = 2.0,
+    fps: int = FPS,
+    end_t: float = DURATION,
+    focus_color: tuple[int, int, int] = DEFAULT_FOCUS_COLOR,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
+    seed: int = 0,
+) -> list[tuple[str, float, str]]:
+    """Render the four progress-animation cases (start top/bottom x cw/ccw).
+
+    Each case renders its own progress sequence into ``out_dir/<name>/frame_%03d.png``
+    where ``name`` is ``<start>_<dir>``.
+    """
+    cases = [
+        ("top_cw", 90.0, "clockwise"),
+        ("top_ccw", 90.0, "counterclockwise"),
+        ("bottom_cw", 270.0, "clockwise"),
+        ("bottom_ccw", 270.0, "counterclockwise"),
+    ]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if not QApplication.instance():
+        QApplication([])
+    for name, start_angle, direction in cases:
+        case_dir = out_dir / name
+        case_dir.mkdir(parents=True, exist_ok=True)
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, SIZE, SIZE)
+        center = QPointF(SIZE / 2.0, SIZE / 2.0)
+        rings = build_focus_rings(
+            center,
+            focus_color=focus_color,
+            start_angle=start_angle,
+            direction=direction,
+        )
+        for item in rings:
+            scene.addItem(item)
+        frames, _, _ = render_progress_clip(
+            scene,
+            rings,
+            case_dir,
+            duration_ms=duration_ms,
+            spin_period_s=spin_period_s,
+            value_interval_s=value_interval_s,
+            fps=fps,
+            end_t=end_t,
+            focus_color=focus_color,
+            background=background,
+            seed=seed,
+        )
+        print(
+            f"OK rendered {len(frames)} progress frames for {name} "
+            f"(start={start_angle:.0f}, {direction})"
+        )
     return cases
 
 

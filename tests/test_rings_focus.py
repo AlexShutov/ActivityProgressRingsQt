@@ -17,6 +17,8 @@ from activityrings.rings_focus import (
     default_schedule,
     ease_out_cubic,
     layout,
+    progress_track,
+    seed_progress_targets,
 )
 
 
@@ -147,3 +149,51 @@ def test_base_rings_are_move_exercise_stand():
         (145, 221, 82),
         (56, 181, 240),
     ]
+
+
+# -- progress track ---------------------------------------------------------
+def test_progress_track_at_t_zero_is_first_target():
+    assert progress_track(0, [[0.0], [0.5]], interval_s=2, tween_s=0.3) == [0.0]
+
+
+def test_progress_track_completes_tween_after_interval_boundary():
+    assert progress_track(2.3, [[0.0], [0.5]], interval_s=2, tween_s=0.3) == [0.5]
+
+
+def test_progress_track_intermediate_k_is_strictly_between():
+    v = progress_track(2.15, [[0.0], [1.0]], interval_s=2, tween_s=0.3)[0]
+    assert 0.0 < v < 1.0
+
+
+def test_progress_track_eases_monotonically():
+    interval = 2.0
+    targets = [[0.0], [1.0], [2.0]]
+    prev = None
+    for i in range(61):
+        v = progress_track(i * 0.1, targets, interval_s=interval, tween_s=0.6)[0]
+        if prev is not None:
+            assert v >= prev - 1e-9
+        prev = v
+
+
+def test_progress_track_clamps_tween_to_interval():
+    targets = [[0.0], [1.0], [2.0]]
+    # tween longer than the interval is clamped to the interval length, so the
+    # midpoint of interval 1 (t_in=1.0, k=0.5 after the clamp) uses eased(0.5).
+    v = progress_track(3.0, targets, interval_s=2.0, tween_s=5.0)[0]
+    assert 0.0 < v < 1.0
+    assert v == pytest.approx(ease_out_cubic(0.5))
+
+
+def test_progress_track_negative_t_returns_first_target():
+    assert progress_track(-1.0, [[0.5], [1.5]], interval_s=2, tween_s=0.3) == [0.5]
+
+
+def test_seed_progress_targets_shape_and_bounds():
+    targets = seed_progress_targets(5, 3, seed=42)
+    assert len(targets) == 5
+    for row in targets:
+        assert len(row) == 3
+        for v in row:
+            assert 0.0 <= v <= 2.0
+    assert seed_progress_targets(5, 3, seed=42) == targets
