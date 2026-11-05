@@ -1,0 +1,350 @@
+"""Qt-rendered Activity-Rings overlay preview with focus-shifting (PySide6, offscreen).
+
+A concrete ``RingItem`` (``QGraphicsItem``) paints the three concentric rings with a
+``QConicalGradient`` pen, ``RoundCap`` end caps and a soft ``QGraphicsDropShadowEffect``.
+A focused ring gets a closed thin outline wrapping its swept band — both inner/outer arc edges
+plus the two rounded end caps — green by default via ``DEFAULT_FOCUS_COLOR``, faded with each
+ring's focus level and tracking the ring through the focus animation; the color is overridable
+via the ``focus_color`` argument on ``build_focus_rings`` / ``render``.
+``radius`` and ``width`` are PySide6 ``Property`` (float) so they can be animated; the
+focus transition is NOT driven by live timers — frames are computed deterministically from
+the pure ``activityrings.rings_focus`` timeline and rendered via ``QGraphicsScene`` to
+``QImage``, so the same code drives a live view and an offscreen video.
+
+Run (default = focus demo):  .venv-trcc/bin/python tools/qrings_preview.py
+Run (original sweep):        .venv-trcc/bin/python tools/qrings_preview.py --sweep
+"""
+# SPDX-License-Identifier: MIT
+from __future__ import annotations
+
+import math
+import os
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import Property, QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QConicalGradient,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QGraphicsDropShadowEffect,
+    QGraphicsItem,
+    QGraphicsObject,
+    QGraphicsScene,
+)
+
+REPO = Path(__file__).resolve().parents[1]
+SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from activityrings.rings_focus import (  # noqa: E402
+    BASE_RINGS,
+    FOCUS_SCALE,
+    GAP_FRACTION,
+    TRANSITION_S,
+    FocusTimeline,
+    default_schedule,
+)
+
+OUT = REPO / "docs" / "rings_focus"
+SIZE = 760
+OUTER_R = SIZE * 0.4575
+FPS = 24
+PRE_ROLL = 0.5
+DURATION = 16.0
+PERIOD = 5.0
+HOLD = 2.0
+DEFAULT_FOCUS_COLOR: tuple[int, int, int] = (0, 200, 90)
+
+
+def qcolor(color: tuple[int, int, int]) -> QColor:
+    return QColor(*color)
+
+
+class RingItem(QGraphicsObject):
+    """A single Activity ring (gradient QPen, RoundCap), centered at (0,0).
+
+    ``radius`` (centerline) and ``width`` (stroke) are animatable PySide6 properties;
+    changing either updates the geometry and re-scales the drop shadow with ``width``.
+    """
+
+    def __init__(
+        self,
+        radius: float,
+        width: float,
+        color: tuple[int, int, int],
+        start_angle: float = 270.0,
+        target: float = 1.0,
+        focus_color: tuple[int, int, int] | None = None,
+    ) -> None:
+        super().__init__()
+        self._r = float(radius)
+        self._w = float(width)
+        self._color = qcolor(color)
+        self._start = start_angle
+        self._target = target
+        self._sweep = 360.0 * target
+        self._focus_color = qcolor(focus_color or DEFAULT_FOCUS_COLOR)
+        self._focus_level = 0.0
+        self._effect = QGraphicsDropShadowEffect()
+        self._apply_shadow()
+        self.setGraphicsEffect(self._effect)
+        self.setCacheMode(QGraphicsItem.ItemCoordinateCache)
+
+    def _apply_shadow(self) -> None:
+        w = self._w
+        self._effect.setBlurRadius(max(1.0, w * 1.1))
+        self._effect.setXOffset(w * 0.35)
+        self._effect.setYOffset(w * 0.35)
+        self._effect.setColor(QColor(0, 0, 0, 200))
+
+    def _get_radius(self) -> float:
+        return self._r
+
+    def _set_radius(self, value: float) -> None:
+        value = float(value)
+        if value == self._r:
+            return
+        self.prepareGeometryChange()
+        self._r = value
+        self.update()
+
+    radius = Property(float, _get_radius, _set_radius)
+
+    def _get_width(self) -> float:
+        return self._w
+
+    def _set_width(self, value: float) -> None:
+        value = float(value)
+        if value == self._w:
+            return
+        self.prepareGeometryChange()
+        self._w = value
+        self._apply_shadow()
+        self.update()
+
+    width = Property(float, _get_width, _set_width)
+
+    def set_focus_color(self, color: tuple[int, int, int] | QColor) -> None:
+        self._focus_color = QColor(color) if isinstance(color, QColor) else qcolor(color)
+        self.update()
+
+    def _get_focus_level(self) -> float:
+        return self._focus_level
+
+    def _set_focus_level(self, value: float) -> None:
+        value = float(max(0.0, min(value, 1.0)))
+        if value == self._focus_level:
+            return
+        self._focus_level = value
+        self.update()
+
+    focus_level = Property(float, _get_focus_level, _set_focus_level)
+
+    def boundingRect(self) -> QRectF:
+        m = self._r + self._w
+        return QRectF(-m, -m, 2 * m, 2 * m)
+
+    def set_sweep(self, fraction: float) -> None:
+        self._sweep = 360.0 * max(0.0, min(fraction, 1.0))
+        self.update()
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        g = QConicalGradient(QPointF(0, 0), self._start)
+        g.setColorAt(0.0, self._color.lighter(118))
+        g.setColorAt(0.12, self._color)
+        g.setColorAt(0.85, self._color.darker(96))
+        g.setColorAt(1.0, self._color.lighter(105))
+        pen = QPen(QBrush(g), self._w)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        rect = QRectF(-self._r, -self._r, 2 * self._r, 2 * self._r)
+        painter.drawArc(rect, int(self._start * 16), int(-self._sweep * 16))
+        if self._focus_level > 0.0:
+            self._paint_focus(painter)
+
+    def _paint_focus(self, painter: QPainter) -> None:
+        """Closed thin outline wrapping the focused ring's band (both edges + rounded caps).
+
+        Traces the full perimeter of the swept band: outer arc, rounded end cap, inner arc,
+        rounded start cap. Hugs BOTH edges and closes at the boundary points, so the outline
+        surrounds the ring on its inner/outer sides and its outer circumference. Faded with
+        focus level; tracks the ring as it widens/reflows through the focus animation.
+        """
+        color = QColor(self._focus_color)
+        color.setAlpha(int(255 * self._focus_level))
+        pen = QPen(color, max(1.5, self._w * 0.03))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+
+        ri = self._r - self._w / 2.0
+        ro = self._r + self._w / 2.0
+        a0 = self._start
+        a1 = a0 - self._sweep
+
+        outer_rect = QRectF(-ro, -ro, 2 * ro, 2 * ro)
+        inner_rect = QRectF(-ri, -ri, 2 * ri, 2 * ri)
+
+        # Rounded caps: half-discs (diameter w) centered on the band when it is cut.
+        cap1 = self._arc_point(self._r, a1)
+        cap0 = self._arc_point(self._r, a0)
+        cap1_rect = QRectF(cap1.x() - self._w / 2.0, cap1.y() - self._w / 2.0, self._w, self._w)
+        cap0_rect = QRectF(cap0.x() - self._w / 2.0, cap0.y() - self._w / 2.0, self._w, self._w)
+
+        path = QPainterPath()
+        path.arcMoveTo(outer_rect, a0)
+        path.arcTo(outer_rect, a0, -self._sweep)
+        path.arcTo(cap1_rect, a1, -180)
+        path.arcTo(inner_rect, a1, self._sweep)
+        path.arcTo(cap0_rect, a0 + 180, -180)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+    @staticmethod
+    def _arc_point(radius: float, angle_deg: float) -> QPointF:
+        """Point on a circle centered at the origin at ``angle_deg`` (Qt angle convention)."""
+        a = math.radians(angle_deg)
+        return QPointF(radius * math.cos(a), -radius * math.sin(a))
+
+
+def build_focus_rings(
+    center: QPointF, focus_color: tuple[int, int, int] | None = None
+) -> list[RingItem]:
+    rings: list[RingItem] = []
+    for base in BASE_RINGS:
+        r = base.width_frac * OUTER_R
+        item = RingItem(r, r, base.color, base.start_angle, base.target, focus_color=focus_color)
+        item.setPos(center)
+        rings.append(item)
+    return rings
+
+
+def build_timeline() -> FocusTimeline:
+    schedule = default_schedule(period=PERIOD, focus_duration=HOLD, n_rings=3, cycles=4)
+    return FocusTimeline(
+        schedule, outer_r=OUTER_R, gap=GAP_FRACTION * OUTER_R, transition_s=TRANSITION_S
+    )
+
+
+def render(
+    size: int,
+    scene: QGraphicsScene,
+    focus_color: tuple[int, int, int] | None = None,
+) -> QImage:
+    if focus_color is not None:
+        for item in scene.items():
+            if isinstance(item, RingItem):
+                item.set_focus_color(focus_color)
+    img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+    img.fill(QColor(16, 18, 24))
+    p = QPainter(img)
+    scene.render(p)
+    p.end()
+    return img
+
+
+def apply_focus_frame(rings: list[RingItem], frame) -> None:
+    for item, radius, width, factor in zip(
+        rings, frame.radii, frame.widths, frame.factors, strict=True
+    ):
+        item.radius = radius
+        item.width = width
+        item.focus_level = factor
+
+
+def render_focus_clip(
+    scene: QGraphicsScene,
+    rings: list[RingItem],
+    timeline: FocusTimeline,
+    out_dir: Path,
+    *,
+    start_t: float = -PRE_ROLL,
+    end_t: float = DURATION,
+    fps: int = FPS,
+    focus_color: tuple[int, int, int] | None = None,
+) -> tuple[list[QImage], float, float]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = int(round((end_t - start_t) * fps)) + 1
+    frames: list[QImage] = []
+    for i in range(n):
+        t = start_t + i / fps
+        apply_focus_frame(rings, timeline.frame(t))
+        scene.update()
+        img = render(SIZE, scene, focus_color=focus_color)
+        frames.append(img)
+        img.save(str(out_dir / f"frame_{i:03d}.png"))
+    return frames, start_t, fps
+
+
+def focused_still_times() -> list[tuple[str, float]]:
+    schedule = default_schedule(period=PERIOD, focus_duration=HOLD, n_rings=3, cycles=4)
+    return [(BASE_RINGS[w.index].key, w.start + TRANSITION_S + 0.2) for w in schedule[:3]]
+
+
+def render_focus_demo(focus_color: tuple[int, int, int] | None = None) -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QApplication([])
+    scene = QGraphicsScene()
+    scene.setSceneRect(0, 0, SIZE, SIZE)
+    center = QPointF(SIZE / 2.0, SIZE / 2.0)
+    rings = build_focus_rings(center, focus_color=focus_color)
+    for item in rings:
+        scene.addItem(item)
+    timeline = build_timeline()
+    frames, start_t, fps = render_focus_clip(
+        scene, rings, timeline, OUT, focus_color=focus_color
+    )
+    for key, t in focused_still_times():
+        apply_focus_frame(rings, timeline.frame(t))
+        scene.update()
+        render(SIZE, scene, focus_color=focus_color).save(str(OUT / f"focus_{key}.png"))
+    print(f"OK rendered {len(frames)} focus frames -> {OUT}")
+    print(f"pre-roll={PRE_ROLL}s start={start_t}s fps={fps} duration={DURATION}s")
+    print(f"outer_r={OUTER_R:.2f} focus_scale={FOCUS_SCALE}")
+    return 0
+
+
+def render_sweep_demo() -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QApplication([])
+    scene = QGraphicsScene()
+    scene.setSceneRect(0, 0, SIZE, SIZE)
+    center = QPointF(SIZE / 2.0, SIZE / 2.0)
+    rings = build_focus_rings(center)
+    for item in rings:
+        scene.addItem(item)
+    duration = 1.6
+    stagger = 0.18
+    total = int(duration * FPS) + 1
+    for n in range(total):
+        t = n / FPS
+        for i, item in enumerate(rings):
+            local = (t - i * stagger) / duration
+            item.set_sweep(BASE_RINGS[i].target * (1.0 - (1.0 - max(0.0, min(1.0, local))) ** 3))
+        scene.update()
+        render(SIZE, scene).save(str(OUT / f"sweep_{n:02d}.png"))
+    print(f"OK rendered {total} sweep frames -> {OUT}")
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--sweep":
+        return render_sweep_demo()
+    return render_focus_demo()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
