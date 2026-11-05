@@ -63,6 +63,7 @@ DURATION = 16.0
 PERIOD = 5.0
 HOLD = 2.0
 DEFAULT_FOCUS_COLOR: tuple[int, int, int] = (0, 200, 90)
+DEFAULT_BACKGROUND: tuple[int, int, int] = (16, 18, 24)
 
 
 def qcolor(color: tuple[int, int, int]) -> QColor:
@@ -241,13 +242,14 @@ def render(
     size: int,
     scene: QGraphicsScene,
     focus_color: tuple[int, int, int] | None = None,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
 ) -> QImage:
     if focus_color is not None:
         for item in scene.items():
             if isinstance(item, RingItem):
                 item.set_focus_color(focus_color)
     img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
-    img.fill(QColor(16, 18, 24))
+    img.fill(QColor(*background))
     p = QPainter(img)
     scene.render(p)
     p.end()
@@ -273,6 +275,7 @@ def render_focus_clip(
     end_t: float = DURATION,
     fps: int = FPS,
     focus_color: tuple[int, int, int] | None = None,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
 ) -> tuple[list[QImage], float, float]:
     out_dir.mkdir(parents=True, exist_ok=True)
     n = int(round((end_t - start_t) * fps)) + 1
@@ -281,7 +284,7 @@ def render_focus_clip(
         t = start_t + i / fps
         apply_focus_frame(rings, timeline.frame(t))
         scene.update()
-        img = render(SIZE, scene, focus_color=focus_color)
+        img = render(SIZE, scene, focus_color=focus_color, background=background)
         frames.append(img)
         img.save(str(out_dir / f"frame_{i:03d}.png"))
     return frames, start_t, fps
@@ -292,8 +295,12 @@ def focused_still_times() -> list[tuple[str, float]]:
     return [(BASE_RINGS[w.index].key, w.start + TRANSITION_S + 0.2) for w in schedule[:3]]
 
 
-def render_focus_demo(focus_color: tuple[int, int, int] | None = None) -> int:
-    OUT.mkdir(parents=True, exist_ok=True)
+def render_focus_demo(
+    focus_color: tuple[int, int, int] | None = None,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
+    out_dir: Path = OUT,
+) -> int:
+    out_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     QApplication([])
     scene = QGraphicsScene()
@@ -304,13 +311,15 @@ def render_focus_demo(focus_color: tuple[int, int, int] | None = None) -> int:
         scene.addItem(item)
     timeline = build_timeline()
     frames, start_t, fps = render_focus_clip(
-        scene, rings, timeline, OUT, focus_color=focus_color
+        scene, rings, timeline, out_dir, focus_color=focus_color, background=background
     )
     for key, t in focused_still_times():
         apply_focus_frame(rings, timeline.frame(t))
         scene.update()
-        render(SIZE, scene, focus_color=focus_color).save(str(OUT / f"focus_{key}.png"))
-    print(f"OK rendered {len(frames)} focus frames -> {OUT}")
+        render(SIZE, scene, focus_color=focus_color, background=background).save(
+            str(out_dir / f"focus_{key}.png")
+        )
+    print(f"OK rendered {len(frames)} focus frames -> {out_dir}")
     print(f"pre-roll={PRE_ROLL}s start={start_t}s fps={fps} duration={DURATION}s")
     print(f"outer_r={OUTER_R:.2f} focus_scale={FOCUS_SCALE}")
     return 0
