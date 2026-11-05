@@ -2,10 +2,12 @@
 
 A concrete ``RingItem`` (``QGraphicsItem``) paints the three concentric rings with a
 ``QConicalGradient`` pen, ``RoundCap`` end caps and a soft ``QGraphicsDropShadowEffect``.
-A focused ring gets a closed thin outline wrapping its swept band — both inner/outer arc edges
-plus the two rounded end caps — green by default via ``DEFAULT_FOCUS_COLOR``, faded with each
-ring's focus level and tracking the ring through the focus animation; the color is overridable
-via the ``focus_color`` argument on ``build_focus_rings`` / ``render``.
+A focused ring gets a glowing LED-strip line hugging its swept band — the outline itself —
+with a soft colour glow (``QGraphicsDropShadowEffect``) that also snaps to the ring's
+outline colour instead of tinting the whole background. Green by default via
+``DEFAULT_FOCUS_COLOR``, faded with each ring's focus level and tracking the ring through
+the focus animation; the color is overridable via the ``focus_color`` argument on
+``build_focus_rings`` / ``render``.
 ``radius`` and ``width`` are PySide6 ``Property`` (float) so they can be animated; the
 focus transition is NOT driven by live timers — frames are computed deterministically from
 the pure ``activityrings.rings_focus`` timeline and rendered via ``QGraphicsScene`` to
@@ -102,10 +104,19 @@ class RingItem(QGraphicsObject):
 
     def _apply_shadow(self) -> None:
         w = self._w
-        self._effect.setBlurRadius(max(1.0, w * 1.1))
-        self._effect.setXOffset(w * 0.35)
-        self._effect.setYOffset(w * 0.35)
-        self._effect.setColor(QColor(0, 0, 0, 200))
+        f = self._focus_level
+        # At rest: near-black soft shadow below. As the ring is focused, the shadow
+        # becomes a soft glow of the outline colour: it spreads (more blur), the
+        # offset sinks toward the ring (0,0), and the colour blends to the focus
+        # colour instead of tinting the whole background.
+        self._effect.setBlurRadius(max(1.0, w * (1.1 + 0.95 * f)))
+        off = w * 0.35 * (1.0 - f)
+        self._effect.setXOffset(off)
+        self._effect.setYOffset(off)
+        r = round(self._focus_color.red() * f)
+        g = round(self._focus_color.green() * f)
+        b = round(self._focus_color.blue() * f)
+        self._effect.setColor(QColor(r, g, b, int(200 - 25 * f)))
 
     def _get_radius(self) -> float:
         return self._r
@@ -146,6 +157,7 @@ class RingItem(QGraphicsObject):
         if value == self._focus_level:
             return
         self._focus_level = value
+        self._apply_shadow()
         self.update()
 
     focus_level = Property(float, _get_focus_level, _set_focus_level)
@@ -175,19 +187,15 @@ class RingItem(QGraphicsObject):
             self._paint_focus(painter)
 
     def _paint_focus(self, painter: QPainter) -> None:
-        """Closed thin outline wrapping the focused ring's band (both edges + rounded caps).
+        """Closed LED-strip outline wrapping the focused ring's band.
 
-        Traces the full perimeter of the swept band: outer arc, rounded end cap, inner arc,
-        rounded start cap. Hugs BOTH edges and closes at the boundary points, so the outline
-        surrounds the ring on its inner/outer sides and its outer circumference. Faded with
-        focus level; tracks the ring as it widens/reflows through the focus animation.
+        Traces the full perimeter of the swept band: outer arc, rounded end cap, inner
+        arc, rounded start cap, so the outline hugs both edges and closes at the boundary
+        points. Drawn as a soft glow: three wide, faint gradient-width passes that spread
+        outward, then a thin colour-transitioned core strip (``QConicalGradient``). Faded
+        with focus level; tracks the ring as it widens/reflows through the focus animation.
         """
-        color = QColor(self._focus_color)
-        color.setAlpha(int(255 * self._focus_level))
-        pen = QPen(color, max(1.5, self._w * 0.03))
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
+        core = max(1.5, self._w * 0.03)
 
         ri = self._r - self._w / 2.0
         ro = self._r + self._w / 2.0
@@ -210,6 +218,29 @@ class RingItem(QGraphicsObject):
         path.arcTo(inner_rect, a1, self._sweep)
         path.arcTo(cap0_rect, a0 + 180, -180)
         path.closeSubpath()
+
+        # Soft glow: wide, faint passes spreading outward from the outline line.
+        for mult, alpha in ((7.0, 22), (4.5, 40), (2.8, 62)):
+            c = QColor(self._focus_color)
+            c.setAlpha(int(alpha * self._focus_level))
+            pen = QPen(c, core * mult)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+        # Core LED strip: a colour-transitioned line hugging the outline.
+        fc = QColor(self._focus_color)
+        fc.setAlpha(int(255 * self._focus_level))
+        g = QConicalGradient(QPointF(0, 0), self._start)
+        g.setColorAt(0.0, fc.lighter(140))
+        g.setColorAt(0.12, fc)
+        g.setColorAt(0.85, fc.darker(130))
+        g.setColorAt(1.0, fc.lighter(140))
+        pen = QPen(QBrush(g), core)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
         painter.drawPath(path)
 
     @staticmethod
@@ -238,10 +269,6 @@ def build_timeline() -> FocusTimeline:
     )
 
 
-def _blend(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tuple[int, int, int]:
-    return tuple(int(round(a + (b - a) * t)) for a, b in zip(c1, c2, strict=False))
-
-
 def render(
     size: int,
     scene: QGraphicsScene,
@@ -252,15 +279,8 @@ def render(
         for item in scene.items():
             if isinstance(item, RingItem):
                 item.set_focus_color(focus_color)
-    # While a ring is focused, wash the background toward that ring's outline colour so
-    # the background matches the selected ring's outline line.
-    max_focus = max(
-        (item.focus_level for item in scene.items() if isinstance(item, RingItem)),
-        default=0.0,
-    )
-    bg = _blend(background, focus_color or DEFAULT_FOCUS_COLOR, max_focus)
     img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
-    img.fill(QColor(*bg))
+    img.fill(QColor(*background))
     p = QPainter(img)
     scene.render(p)
     p.end()
