@@ -480,7 +480,6 @@ def render_progress_clip(
     out_dir: Path,
     *,
     duration_ms: float = 300.0,
-    spin_period_s: float = 4.0,
     value_interval_s: float = 2.0,
     fps: int = FPS,
     start_t: float = 0.0,
@@ -490,11 +489,12 @@ def render_progress_clip(
     seed: int = 0,
     uplim: float = 2.0,
 ) -> tuple[list[QImage], float, float]:
-    """Render a value-change tween + continuous-spin progress clip.
+    """Render a value-change-tween progress clip.
 
     Per-ring progress comes from ``progress_track`` over seeded interval targets
-    (``duration_ms``/1000 is the value-change tween length); each ring also spins
-    continuously with period ``spin_period_s``.
+    (``duration_ms``/1000 is the value-change tween length). The start point stays
+    fixed at the ring's ``start_angle``; the tween moves each ring's leading arc edge
+    around, so the arc grows/shrinks from the fixed origin instead of rigidly spinning.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     n = int(round((end_t - start_t) * fps)) + 1
@@ -508,9 +508,6 @@ def render_progress_clip(
         )
         for r, item in enumerate(rings):
             item.progress = vals[r]
-            item.rotation = (
-                -1.0 if item.direction == "clockwise" else 1.0
-            ) * (t / spin_period_s) * 360.0
         scene.update()
         img = render(SIZE, scene, focus_color=focus_color, background=background)
         frames.append(img)
@@ -522,7 +519,6 @@ def render_progress_cases(
     out_dir: Path,
     *,
     duration_ms: float = 300.0,
-    spin_period_s: float = 4.0,
     value_interval_s: float = 2.0,
     fps: int = FPS,
     end_t: float = DURATION,
@@ -563,7 +559,6 @@ def render_progress_cases(
             rings,
             case_dir,
             duration_ms=duration_ms,
-            spin_period_s=spin_period_s,
             value_interval_s=value_interval_s,
             fps=fps,
             end_t=end_t,
