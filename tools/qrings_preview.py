@@ -87,12 +87,19 @@ class RingItem(QGraphicsObject):
         start_angle: float = 270.0,
         target: float = 1.0,
         focus_color: tuple[int, int, int] | None = None,
+        *,
+        direction: str = "clockwise",
     ) -> None:
         super().__init__()
+        if direction not in ("clockwise", "counterclockwise"):
+            raise ValueError(
+                f"direction must be 'clockwise' or 'counterclockwise', got {direction!r}"
+            )
         self._r = float(radius)
         self._w = float(width)
         self._color = qcolor(color)
         self._start = start_angle
+        self._direction = direction
         self._target = target
         self._sweep = 360.0 * target
         self._focus_color = qcolor(focus_color or DEFAULT_FOCUS_COLOR)
@@ -182,7 +189,8 @@ class RingItem(QGraphicsObject):
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
         rect = QRectF(-self._r, -self._r, 2 * self._r, 2 * self._r)
-        painter.drawArc(rect, int(self._start * 16), int(-self._sweep * 16))
+        span = -self._sweep if self._direction == "clockwise" else self._sweep
+        painter.drawArc(rect, int(self._start * 16), int(span * 16))
         if self._focus_level > 0.0:
             self._paint_focus(painter)
 
@@ -200,7 +208,9 @@ class RingItem(QGraphicsObject):
         ri = self._r - self._w / 2.0
         ro = self._r + self._w / 2.0
         a0 = self._start
-        a1 = a0 - self._sweep
+        sign = -1.0 if self._direction == "clockwise" else 1.0
+        a1 = a0 + sign * self._sweep
+        cap_span = sign * 180.0
 
         outer_rect = QRectF(-ro, -ro, 2 * ro, 2 * ro)
         inner_rect = QRectF(-ri, -ri, 2 * ri, 2 * ri)
@@ -213,10 +223,10 @@ class RingItem(QGraphicsObject):
 
         path = QPainterPath()
         path.arcMoveTo(outer_rect, a0)
-        path.arcTo(outer_rect, a0, -self._sweep)
-        path.arcTo(cap1_rect, a1, -180)
-        path.arcTo(inner_rect, a1, self._sweep)
-        path.arcTo(cap0_rect, a0 + 180, -180)
+        path.arcTo(outer_rect, a0, sign * self._sweep)
+        path.arcTo(cap1_rect, a1, cap_span)
+        path.arcTo(inner_rect, a1, -sign * self._sweep)
+        path.arcTo(cap0_rect, a0 + 180.0, cap_span)
         path.closeSubpath()
 
         # Soft glow: wide, faint passes spreading outward from the outline line.
@@ -251,12 +261,24 @@ class RingItem(QGraphicsObject):
 
 
 def build_focus_rings(
-    center: QPointF, focus_color: tuple[int, int, int] | None = None
+    center: QPointF,
+    focus_color: tuple[int, int, int] | None = None,
+    *,
+    start_angle: float | None = None,
+    direction: str = "clockwise",
 ) -> list[RingItem]:
     rings: list[RingItem] = []
     for base in BASE_RINGS:
         r = base.width_frac * OUTER_R
-        item = RingItem(r, r, base.color, base.start_angle, base.target, focus_color=focus_color)
+        item = RingItem(
+            r,
+            r,
+            base.color,
+            base.start_angle if start_angle is None else start_angle,
+            base.target,
+            focus_color=focus_color,
+            direction=direction,
+        )
         item.setPos(center)
         rings.append(item)
     return rings
@@ -330,6 +352,9 @@ def render_focus_demo(
     focus_color: tuple[int, int, int] | None = None,
     background: tuple[int, int, int] = DEFAULT_BACKGROUND,
     out_dir: Path = OUT,
+    *,
+    start_angle: float | None = None,
+    direction: str = "clockwise",
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -337,7 +362,9 @@ def render_focus_demo(
     scene = QGraphicsScene()
     scene.setSceneRect(0, 0, SIZE, SIZE)
     center = QPointF(SIZE / 2.0, SIZE / 2.0)
-    rings = build_focus_rings(center, focus_color=focus_color)
+    rings = build_focus_rings(
+        center, focus_color=focus_color, start_angle=start_angle, direction=direction
+    )
     for item in rings:
         scene.addItem(item)
     timeline = build_timeline()
@@ -354,6 +381,47 @@ def render_focus_demo(
     print(f"pre-roll={PRE_ROLL}s start={start_t}s fps={fps} duration={DURATION}s")
     print(f"outer_r={OUTER_R:.2f} focus_scale={FOCUS_SCALE}")
     return 0
+
+
+def render_focus_cases(
+    out_dir: Path,
+    *,
+    focus_color: tuple[int, int, int] = DEFAULT_FOCUS_COLOR,
+    background: tuple[int, int, int] = DEFAULT_BACKGROUND,
+) -> list[tuple[str, float, str]]:
+    """Render the four focus-animation cases (start top/bottom x cw/ccw).
+
+    Each case renders its own focus sequence into ``out_dir/<name>/frame_%03d.png``
+    where ``name`` is ``<start>_<dir>``. The caller composes them (eg. a 2x2 grid)
+    into a single video. Start angles use the same Qt convention as ``drawArc``:
+    ``90`` = top, ``270`` = bottom (this file's ``_arc_point`` mapping).
+    """
+    cases = [
+        ("top_cw", 90.0, "clockwise"),
+        ("top_ccw", 90.0, "counterclockwise"),
+        ("bottom_cw", 270.0, "clockwise"),
+        ("bottom_ccw", 270.0, "counterclockwise"),
+    ]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if not QApplication.instance():
+        QApplication([])
+    for name, start_angle, direction in cases:
+        case_dir = out_dir / name
+        case_dir.mkdir(parents=True, exist_ok=True)
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, SIZE, SIZE)
+        center = QPointF(SIZE / 2.0, SIZE / 2.0)
+        rings = build_focus_rings(
+            center, focus_color=focus_color, start_angle=start_angle, direction=direction
+        )
+        for item in rings:
+            scene.addItem(item)
+        timeline = build_timeline()
+        frames, _, _ = render_focus_clip(
+            scene, rings, timeline, case_dir, focus_color=focus_color, background=background
+        )
+        print(f"OK rendered {len(frames)} frames for {name} (start={start_angle:.0f}, {direction})")
+    return cases
 
 
 def render_sweep_demo() -> int:
