@@ -1,0 +1,266 @@
+"""Apple-style Activity Rings: three concentric, eased, shadowed rings (MIT).
+
+Headless raster over Pillow (no Qt / no window). The core is resolution-independent:
+you give it a rectangular canvas, an explicit ``center`` and an ``outer_radius``, and
+it draws the rings. That makes the SAME renderer usable for:
+
+- the embedded 1920x440 panel overlay (render an RGB frame, trcc composites/encodes), and
+- a full-size HDMI screen (live fullscreen loop, same frames, just a bigger canvas).
+
+Animation is pure Python state (easing) + per-frame redraw, so it works identically
+on a Pi without a GUI. Use ``eased_progress_map``/``render_sequence`` to drive a live
+loop and ``render_rings`` for a single frame.
+
+Rendering primitives:
+- supersampled canvas + LANCZOS downsample for smooth (anti-aliased) ring edges;
+- per-ring soft drop shadow (blurred silhouette, offset below);
+- optional low-alpha backdrop ring (Apple's 15% track);
+- sweep along a gradient start->end colour, with rounded end caps.
+"""
+# SPDX-License-Identifier: MIT
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+from PIL import Image, ImageFilter
+
+Color = tuple[int, int, int]
+
+_DEFAULT_COLORS: dict[str, Color] = {
+    "move": (250, 55, 95),  # red
+    "exercise": (145, 221, 82),  # green
+    "stand": (56, 181, 240),  # blue
+}
+
+_DEFAULT_TARGETS: dict[str, float] = {"move": 0.72, "exercise": 0.86, "stand": 0.55}
+
+
+@dataclass(frozen=True)
+class RingSpec:
+    key: str
+    label: str
+    radius: float  # at 1x scale
+    width: float  # at 1x scale
+    color: Color = _DEFAULT_COLORS["move"]
+    target: float = 1.0
+    start_angle: float = -90.0  # 12 o'clock
+    backdrop_alpha: int = 38  # ~15% track
+    shadow: bool = True
+
+
+def build_rings(
+    outer_radius: float,
+    width: float,
+    targets: dict[str, float] | None = None,
+) -> list[RingSpec]:
+    """Three concentric rings from the outer radius inward (outer -> inner)."""
+    targets = targets or _DEFAULT_TARGETS
+    gap = outer_radius * 0.26
+    specs = [
+        RingSpec("move", "Move", outer_radius, width, _DEFAULT_COLORS["move"]),
+        RingSpec("exercise", "Exercise", outer_radius - gap, width, _DEFAULT_COLORS["exercise"]),
+        RingSpec("stand", "Stand", outer_radius - 2 * gap, width, _DEFAULT_COLORS["stand"]),
+    ]
+    return [
+        RingSpec(
+            key=spec.key,
+            label=spec.label,
+            radius=spec.radius,
+            width=spec.width,
+            color=spec.color,
+            target=targets.get(spec.key, spec.target),
+            start_angle=spec.start_angle,
+            backdrop_alpha=spec.backdrop_alpha,
+            shadow=spec.shadow,
+        )
+        for spec in specs
+    ]
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _lerp_c(c1: Color, c2: Color, t: float) -> Color:
+    return (
+        int(_lerp(c1[0], c2[0], t)),
+        int(_lerp(c1[1], c2[1], t)),
+        int(_lerp(c1[2], c2[2], t)),
+    )
+
+
+def ease_out_cubic(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) ** 3
+
+
+def _pt(cx: float, cy: float, r: float, angle_deg: float) -> tuple[float, float]:
+    rad = math.radians(angle_deg)
+    return cx + r * math.cos(rad), cy + r * math.sin(rad)
+
+
+def _annulus(
+    cx: float, cy: float, r_in: float, r_out: float, a0: float, a1: float, samples: int = 6
+) -> list[tuple[float, float]]:
+    """Polygon points for an annulus sector between two radii (outer then inner)."""
+    pts: list[tuple[float, float]] = []
+    for i in range(samples + 1):
+        ang = _lerp(a0, a1, i / samples)
+        rad = math.radians(ang)
+        pts.append((cx + r_out * math.cos(rad), cy + r_out * math.sin(rad)))
+    for i in range(samples + 1):
+        ang = _lerp(a0, a1, 1.0 - i / samples)
+        rad = math.radians(ang)
+        pts.append((cx + r_in * math.cos(rad), cy + r_in * math.sin(rad)))
+    return pts
+
+
+def _draw_arc_segments(
+    layer: Image.Image,
+    cx: float,
+    cy: float,
+    r: float,  # stroke CENTERLINE radius
+    width: float,
+    frac: float,
+    c1: Color,
+    c2: Color,
+    start_angle: float,
+    segs: int,
+    alpha: int = 255,
+    *,
+    caps: bool = True,
+) -> None:
+    """Draw a swept ring band (gradient) with cap dots centered on the band.
+
+    The band spans ``[r - width/2, r + width/2]`` so the centerline is exactly ``r``;
+    cap dots are circles of radius ``width/2`` drawn at that same radius, so they sit
+    centered on the band (never poke out).
+    """
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(layer)
+    sweep = 360.0 * max(0.0, min(frac, 1.0))
+    if sweep <= 0:
+        return
+    r_in = r - width / 2.0
+    r_out = r + width / 2.0
+    end_angle = start_angle + sweep
+    for i in range(segs):
+        t = (i + 0.5) / segs
+        a0 = _lerp(start_angle, end_angle, i / segs)
+        a1 = _lerp(start_angle, end_angle, (i + 1) / segs) + 0.5  # overlap avoids seams
+        col = _lerp_c(c1, c2, t) + (alpha,)
+        d.polygon(_annulus(cx, cy, r_in, r_out, a0, a1), fill=col)
+    if caps:
+        rr = width / 2.0
+        for ang, cap_col in ((start_angle, c1), (end_angle, c2)):
+            px, py = _pt(cx, cy, r, ang)
+            d.ellipse([px - rr, py - rr, px + rr, py + rr], fill=cap_col + (alpha,))
+
+
+def _draw_backdrop(
+    layer: Image.Image, cx: float, cy: float, r: float, width: float, color: Color, alpha: int
+) -> None:
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(layer)
+    r_in = r - width / 2.0
+    r_out = r + width / 2.0
+    d.polygon(_annulus(cx, cy, r_in, r_out, 0, 360, samples=64), fill=color + (alpha,))
+
+
+def render_rings(
+    progress: dict[str, float] | None = None,
+    size: tuple[int, int] = (720, 720),
+    *,
+    center: tuple[float, float] | None = None,
+    outer_radius: float | None = None,
+    ss: int = 2,
+    shadow_softness: float = 6.0,
+    shadow_offset: float = 5.0,
+    segs: int = 90,
+    targets: dict[str, float] | None = None,
+) -> Image.Image:
+    """Render one frame of the three Activity Rings.
+
+    ``progress`` maps ring key -> sweep fraction (0..~2, >1 wraps). When omitted it
+    falls back to ``targets`` (default proportions). ``size`` may be any rectangle so
+    the same renderer feeds a wide HDMI screen or a square preview; ``center`` defaults
+    to canvas middle and ``outer_radius`` to 42% of the shorter side.
+    """
+    w, h = size
+    cx, cy = (w / 2.0, h / 2.0) if center is None else center
+    radius = (min(w, h) / 2.0 * 0.84) if outer_radius is None else outer_radius
+
+    canvas_w = int(w * ss)
+    canvas_h = int(h * ss)
+    img = Image.new("RGBA", (canvas_w, canvas_h), (16, 18, 24, 255))
+    px, py = cx * ss, cy * ss
+    rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
+
+    for spec in rings:
+        r = spec.radius
+        width = spec.width
+        frac = float(progress.get(spec.key, spec.target) if progress else spec.target)
+        frac = max(0.0, frac)
+
+        if spec.backdrop_alpha:
+            _draw_backdrop(img, px, py, r, width, spec.color, spec.backdrop_alpha)
+
+        sil = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        _draw_arc_segments(
+            sil, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs
+        )
+
+        if spec.shadow:
+            off = shadow_offset * ss
+            sh = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            sh.paste((0, 0, 0, 120), (int(off), int(off)), sil)
+            sh = sh.filter(ImageFilter.GaussianBlur(shadow_softness * ss))
+            img.alpha_composite(sh)
+
+        img.alpha_composite(sil)
+
+    return img.resize((w, h), Image.Resampling.LANCZOS).convert("RGB")
+
+
+def eased_progress_map(
+    targets: dict[str, float],
+    t: float,
+    *,
+    duration: float = 1.0,
+    stagger: float = 0.18,
+) -> dict[str, float]:
+    """Per-ring eased sweep fraction at global time ``t`` (0..``duration``+stagger).
+
+    Rings start staggered (move, then exercise, then stand) and ease out, giving the
+    Apple-style cascade. Values >1 (e.g. move at 2x) still wrap.
+    """
+    out: dict[str, float] = {}
+    order = list(targets)
+    for i, key in enumerate(order):
+        local = (t - i * stagger) / duration
+        # ease_out_cubic already clamps, so local<0 -> 0 and local>1 -> 1.
+        eased = ease_out_cubic(local)
+        out[key] = targets[key] * eased
+    return out
+
+
+def render_sequence(
+    targets: dict[str, float] | None = None,
+    *,
+    size: tuple[int, int] = (720, 720),
+    seconds: float = 1.6,
+    fps: int = 30,
+    **kw,
+) -> list[Image.Image]:
+    """Pre-render an eased animation as a list of frames (for a GIF / live loop)."""
+    targets = targets or _DEFAULT_TARGETS
+    total = int(seconds * fps) + 1
+    frames: list[Image.Image] = []
+    for n in range(total):
+        t = n / fps
+        prog = eased_progress_map(targets, t, duration=seconds, stagger=0.18)
+        frames.append(render_rings(progress=prog, size=size, **kw))
+    return frames

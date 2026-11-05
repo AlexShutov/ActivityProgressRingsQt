@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "activityprogressringsqt"
+version = "0.1.0"
+description = "Apple-style Activity Progress Rings: Pillow renderer + pure focus-shift timeline + Qt (PySide6) preview."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+# Qt preview (tools/qrings_preview.py) + offscreen video/GIF rendering.
+qt = ["PySide6>=6.6"]
+# Dev / quality harness.
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = ["tools/probe_*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["src"]

@@ -1,0 +1,20 @@
+# Python / tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv*
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg
+
+# OS
+.DS_Store
+
+# Regenerable per-frame dumps (kept in the docs are the deliverable GIF/MP4/stills;
+# the frame_* sequences are re-renderable from tools/qrings_preview.py).
+docs/**/frame_*.png
