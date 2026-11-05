@@ -164,7 +164,7 @@ class RingItem(QGraphicsObject):
         g.setColorAt(0.0, self._color.lighter(118))
         g.setColorAt(0.12, self._color)
         g.setColorAt(0.85, self._color.darker(96))
-        g.setColorAt(1.0, self._color.lighter(105))
+        g.setColorAt(1.0, self._color.lighter(118))
         pen = QPen(QBrush(g), self._w)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
@@ -238,6 +238,10 @@ def build_timeline() -> FocusTimeline:
     )
 
 
+def _blend(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(int(round(a + (b - a) * t)) for a, b in zip(c1, c2, strict=False))
+
+
 def render(
     size: int,
     scene: QGraphicsScene,
@@ -248,8 +252,15 @@ def render(
         for item in scene.items():
             if isinstance(item, RingItem):
                 item.set_focus_color(focus_color)
+    # While a ring is focused, wash the background toward that ring's outline colour so
+    # the background matches the selected ring's outline line.
+    max_focus = max(
+        (item.focus_level for item in scene.items() if isinstance(item, RingItem)),
+        default=0.0,
+    )
+    bg = _blend(background, focus_color or DEFAULT_FOCUS_COLOR, max_focus)
     img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
-    img.fill(QColor(*background))
+    img.fill(QColor(*bg))
     p = QPainter(img)
     scene.render(p)
     p.end()
