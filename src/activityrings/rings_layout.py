@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .rings_focus import BASE_RINGS, RingBase, layout
+from .rings_strategy import DEFAULT_RING_MIN_GAP_PX, RingGrowthPlan, select_ring_strategy
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class BaseRingsLayoutManager:
         min_slot: float = 8.0,
         ring_bases: Sequence[RingBase] = BASE_RINGS,
         backdrop_alpha: int = 38,
+        min_gap_px: float | None = None,
     ) -> None:
         self._outer_fraction = outer_fraction
         self._selection_scale = selection_scale
@@ -85,6 +87,9 @@ class BaseRingsLayoutManager:
         self._min_slot = min_slot
         self._ring_bases = list(ring_bases)
         self._backdrop_alpha = backdrop_alpha
+        # Минимальный зазор под свечение для пары соседних ВЫБРАННЫХ колец (в px).
+        # ``None`` → дефолт из номинальной панели (см. ``rings_strategy``).
+        self._min_gap_px = min_gap_px if min_gap_px is not None else DEFAULT_RING_MIN_GAP_PX
 
     @property
     def outer_fraction(self) -> float:
@@ -141,15 +146,18 @@ class BaseRingsLayoutManager:
     ) -> RingsLayoutResult:
         """Shared geometry path for both subclasses.
 
-        ``widths`` are the per-ring band widths after any selection growth (provided
-        by the subclass via ``_widths``), and the centerline radii come from
+        ``base`` — базовые толщины колец; ``plan`` от стратегии выделения даёт
+        per-ring ``scales`` (рост) и эффективный ``gap``; радиусы приходят из
         ``rings_focus.layout`` (outer-edge anchored, constant edge gap).
         """
         ring_bases = self._ring_bases[:count]
         outer_r = self.outer_radius(short_side)
-        widths = self._widths(outer_r, count, focus)
-        gap = self._resolve_gap(short_side, count, min(widths) if widths else 0.0)
-        radii = layout(widths, gap, outer_r)
+        base = self.base_widths(outer_r)[:count]
+        f = list(focus) if focus is not None else [0.0] * count
+        design_gap = self._resolve_gap(short_side, count, min(base) if base else 0.0)
+        plan = self._growth_plan(base, f, design_gap, outer_r, count)
+        widths = [b * plan.scales[i] for i, b in enumerate(base)]
+        radii = layout(widths, plan.gap, outer_r)
         geometry = tuple(
             RingGeometry(
                 base.key,
@@ -164,7 +172,18 @@ class BaseRingsLayoutManager:
             )
             for i, base in enumerate(ring_bases)
         )
-        return RingsLayoutResult(geometry, outer_r, gap)
+        return RingsLayoutResult(geometry, outer_r, plan.gap)
+
+    def _growth_plan(
+        self,
+        base: Sequence[float],
+        focus: Sequence[float],
+        design_gap: float,
+        outer_r: float,
+        count: int,
+    ) -> RingGrowthPlan:
+        """План роста: статичный режим не растёт и держит ``design_gap``."""
+        return RingGrowthPlan(scales=[1.0] * count, gap=design_gap)
 
     def _widths(self, outer_r: float, count: int, focus: Sequence[float] | None) -> list[float]:
         raise NotImplementedError
@@ -200,6 +219,32 @@ class SelectionRingsLayoutManager(BaseRingsLayoutManager):
     """
 
     is_selection_enabled = True
+
+    def _growth_plan(
+        self,
+        base: Sequence[float],
+        focus: Sequence[float],
+        design_gap: float,
+        outer_r: float,
+        count: int,
+    ) -> RingGrowthPlan:
+        """План роста выбирается стратегией по числу выбранных колец.
+
+        ``selection_on`` здесь всегда True (это Selection-менеджер).  Одно кольцо
+        (или ни одного) растёт на ``selection_scale``; при нескольких выбранных
+        ``SelectMultipleIndicators`` поднимает зазор под свечение и урезает рост,
+        если выбранные соседние.
+        """
+        strategy = select_ring_strategy(focus, True)
+        return strategy.plan(
+            count=count,
+            base_widths=base,
+            focus=focus,
+            scale_full=self._selection_scale,
+            design_gap=design_gap,
+            min_gap_px=self._min_gap_px,
+            outer_r=outer_r,
+        )
 
     def _widths(self, outer_r: float, count: int, focus: Sequence[float] | None) -> list[float]:
         scale = self._selection_scale
