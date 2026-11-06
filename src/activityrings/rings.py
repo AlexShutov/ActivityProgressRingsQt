@@ -21,9 +21,14 @@ Rendering primitives:
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageFilter
+
+if TYPE_CHECKING:
+    from .rings_layout import BaseRingsLayoutManager
 
 Color = tuple[int, int, int]
 
@@ -181,6 +186,8 @@ def render_rings(
     shadow_offset: float = 5.0,
     segs: int = 90,
     targets: dict[str, float] | None = None,
+    layout_manager: BaseRingsLayoutManager | None = None,
+    focus: Sequence[float] | None = None,
 ) -> Image.Image:
     """Render one frame of the three Activity Rings.
 
@@ -188,6 +195,12 @@ def render_rings(
     falls back to ``targets`` (default proportions). ``size`` may be any rectangle so
     the same renderer feeds a wide HDMI screen or a square preview; ``center`` defaults
     to canvas middle and ``outer_radius`` to 42% of the shorter side.
+
+    Pass ``layout_manager`` (a :mod:`activityrings.rings_layout` manager) to drive the
+    ring geometry from a layout manager; ``focus`` then holds the per-ring focus factors
+    (0..1).  Its ``is_selection_enabled`` flag decides whether the focused ring grows in
+    thickness (selection) or all rings keep their width (static).  Without a manager the
+    existing fixed-geometry ``build_rings`` path is used, so behaviour is unchanged.
     """
     w, h = size
     cx, cy = (w / 2.0, h / 2.0) if center is None else center
@@ -197,7 +210,24 @@ def render_rings(
     canvas_h = int(h * ss)
     img = Image.new("RGBA", (canvas_w, canvas_h), (16, 18, 24, 255))
     px, py = cx * ss, cy * ss
-    rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
+    if layout_manager is not None:
+        result = layout_manager.measure(min(w, h), None, focus)
+        rings = [
+            RingSpec(
+                key=g.key,
+                label=g.label,
+                radius=g.radius * ss,
+                width=g.width * ss,
+                color=g.color,
+                target=g.target,
+                start_angle=g.start_angle,
+                backdrop_alpha=g.backdrop_alpha,
+                shadow=g.shadow,
+            )
+            for g in result.geometry
+        ]
+    else:
+        rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
 
     for spec in rings:
         r = spec.radius
