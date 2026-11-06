@@ -1,37 +1,41 @@
-# ActivityProgressRingsQt
+# DashboardWidgets
 
-Apple-style Activity Progress Rings: three concentric, eased, shadowed rings with a pure
-focus-shift timeline, rendered headless (Pillow) and as a Qt/PySide6 overlay preview.
+Apple-style Dashboard Widgets, two sibling packages under one MIT roof:
+
+- **`activityrings`** — Apple-style Activity Progress Rings: three concentric, eased,
+  shadowed rings with a pure focus-shift timeline, rendered headless (Pillow). See
+  `src/activityrings/`.
+- **`activity_linear_indicator`** — the Activity Linear Indicator: a gap-preserving
+  vertical stack of bars with a `QLinearGradient` fill, rounded caps, a soft drop
+  shadow, and a **selection** glow outline (active outline colour) — rendered with a
+  Qt (PySide6) `LinearItem` offscreen. Value/focus switching is eased (never jumping).
+  See `src/activity_linear_indicator/`.
+
+Both share a pure focus-shift model (`linear_focus` / `rings_focus`): a schedule of
+focus windows drives per-item eased width/thickness and a gap-preserving reflow; a
+`progress_track` eases value changes over time. The same code drives a live Qt view and
+an offscreen video render.
 
 ## What's here
 
-- **`src/activityrings/rings.py`** — resolution-independent Pillow renderer (`render_rings`,
-  `render_sequence`, `eased_progress_map`). Feed any rectangle/canvas; the same frames serve an
-  embedded LCD overlay or a full HDMI screen.
-- **`src/activityrings/rings_focus.py`** — the pure focus-shift model (MIT, no Qt/Pillow):
-  constant-gap, outer-edge-anchored layout; each ring ramps to `FOCUS_SCALE` on its focus window;
-  `FocusTimeline.frame(t)` returns `{widths, radii, factors}` so a view can animate and highlight
-  the focused ring.
-- **`tools/rings_preview.py`** — Pillow-only preview that writes `docs/rings/` (GIF + stills).
-  Usage: `python tools/rings_preview.py`.
-- **`tools/qrings_preview.py`** — Qt-rendered focus preview via `QGraphicsScene` → `QImage`
-  (offscreen). Writes `docs/rings_focus/` (frames + `focus_*.png` stills + `activity_focus.mp4`
-  / `.gif`). The focused ring gets a thin configurable outline (green by default). Usage:
-  `python tools/qrings_preview.py` (focus demo) or `--sweep` (original cascade sweep).
-- **`tests/`** — pytest unit tests for the focus model (`rings_focus`) and the layout/easing
-  invariants.
+- **`src/activityrings/`** — `rings.py` (Pillow renderer) + `rings_focus.py` (pure
+  focus model). `tools/rings_preview.py` / `tools/qrings_preview.py` write
+  `docs/rings/` and `docs/rings_focus/`.
+- **`src/activity_linear_indicator/`** — `linear.py` (Qt `LinearItem` + offscreen
+  `QGraphicsScene` → `QImage`) + `linear_focus.py` (pure focus model).
+  `tools/qlinear_preview.py` writes `docs/linear/` + `docs/linear_focus/`.
+- **`tests/`** — pytest unit tests for both focus models.
 
 ## Quickstart
 
 ```bash
-python -m pip install -e .          # Pillow renderer
-python -m pip install -e ".[qt]"    # add PySide6 for the Qt preview
-python tools/rings_preview.py       # write docs/rings/
+python -m pip install -e .          # both packages (Pillow + PySide6)
+python tools/qlinear_preview.py     # write docs/linear/ (+ focus stills)
 python tools/qrings_preview.py      # write docs/rings_focus/ (focus demo)
 python -m pytest tests/             # run the focus-model tests
 ```
 
 ## License
 
-MIT. The Qt overlay preview is intentional standalone code; it does not embed any GPL-3.0
-`trcc` internals.
+MIT. The Qt overlay preview is intentional standalone code; it does not embed any
+GPL-3.0 `trcc` internals.
