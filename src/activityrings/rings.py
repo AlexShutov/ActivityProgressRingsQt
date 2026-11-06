@@ -23,12 +23,11 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from PIL import Image, ImageFilter
 
-if TYPE_CHECKING:
-    from .rings_layout import BaseRingsLayoutManager
+from .rings_focus import RingBase
+from .rings_layout import BaseRingsLayoutManager, SelectionRingsLayoutManager
 
 Color = tuple[int, int, int]
 
@@ -39,6 +38,10 @@ _DEFAULT_COLORS: dict[str, Color] = {
 }
 
 _DEFAULT_TARGETS: dict[str, float] = {"move": 0.72, "exercise": 0.86, "stand": 0.55}
+
+# Глубина (по радиусу) всей группы «кольцо на датчик» как доля ``outer_radius``:
+# толщина одного кольца = ``GAUGE_BAND_DEPTH_FRACTION`` / число датчиков.
+GAUGE_BAND_DEPTH_FRACTION = 0.4
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,66 @@ def build_rings(
         )
         for spec in specs
     ]
+
+
+def gauge_ring_bases(
+    gauges: Sequence[tuple[str, str, Color, float]],
+    *,
+    width_frac: float | None = None,
+) -> list[RingBase]:
+    """Строит концентрические кольца «кольцо на датчик» из описаний датчиков.
+
+    ``gauges`` — последовательность ``(key, label, color, target)`` (целевая доля
+    заполнения, обычно ``0..1``); одно кольцо на датчик, от внешнего к внутреннему.
+    ``width_frac`` — толщина каждого кольца как доля ``outer_radius``; ``None`` —
+    выводится из числа датчиков, чтобы вся группа колец заняла ``GAUGE_BAND_DEPTH``
+    радиуса (для большого числа датчиков кольца становятся тоньше).
+    """
+    count = len(gauges)
+    frac = _gauge_width_frac(count) if width_frac is None else max(0.0, float(width_frac))
+    return [
+        RingBase(
+            key=str(key),
+            label=str(label),
+            color=color,
+            width_frac=frac,
+            target=float(target),
+        )
+        for key, label, color, target in gauges
+    ]
+
+
+def _gauge_width_frac(count: int) -> float:
+    """Толщина одного кольца при ``count`` датчиках (доля ``outer_radius``)."""
+    return float(GAUGE_BAND_DEPTH_FRACTION) / max(1, int(count))
+
+
+def render_gauge_rings(
+    gauges: Sequence[tuple[str, str, Color, float]],
+    size: tuple[int, int],
+    *,
+    progress: dict[str, float] | None = None,
+    focus: Sequence[float] | None = None,
+    layout_manager: BaseRingsLayoutManager | None = None,
+    **render_kwargs,
+) -> Image.Image:
+    """Рендерит кадр «кольцо на датчик» (``gauges``) через ``render_rings``.
+
+    Если ``layout_manager`` не задан, создаётся ``SelectionRingsLayoutManager`` с
+    кольцами из ``gauges`` (выделение — strategя выбора колец). ``progress`` — доля
+    заполнения на каждый ``key`` (``0..~2``); ``focus`` — per-ring факторы выбора.
+    """
+    bases = gauge_ring_bases(gauges)
+    manager = layout_manager
+    if manager is None:
+        manager = SelectionRingsLayoutManager(ring_bases=bases)
+    return render_rings(
+        progress=progress,
+        size=size,
+        layout_manager=manager,
+        focus=focus,
+        **render_kwargs,
+    )
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -294,3 +357,4 @@ def render_sequence(
         prog = eased_progress_map(targets, t, duration=seconds, stagger=0.18)
         frames.append(render_rings(progress=prog, size=size, **kw))
     return frames
+

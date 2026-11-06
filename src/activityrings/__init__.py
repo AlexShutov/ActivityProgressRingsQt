@@ -26,6 +26,8 @@ __all__ = [
     "RingSpec",
     "build_rings",
     "eased_progress_map",
+    "gauge_ring_bases",
+    "render_gauge_rings",
     "render_rings",
     "render_sequence",
 ]
@@ -44,7 +46,15 @@ _FOCUS_EXPORTS = frozenset(
     }
 )
 _PILLOW_EXPORTS = frozenset(
-    {"RingSpec", "build_rings", "eased_progress_map", "render_rings", "render_sequence"}
+    {
+        "RingSpec",
+        "build_rings",
+        "eased_progress_map",
+        "gauge_ring_bases",
+        "render_gauge_rings",
+        "render_rings",
+        "render_sequence",
+    }
 )
 
 
@@ -78,6 +88,8 @@ def __getattr__(name: str):
             RingSpec,
             build_rings,
             eased_progress_map,
+            gauge_ring_bases,
+            render_gauge_rings,
             render_rings,
             render_sequence,
         )
@@ -86,7 +98,10 @@ def __getattr__(name: str):
             "RingSpec": RingSpec,
             "build_rings": build_rings,
             "eased_progress_map": eased_progress_map,
+            "gauge_ring_bases": gauge_ring_bases,
+            "render_gauge_rings": render_gauge_rings,
             "render_rings": render_rings,
             "render_sequence": render_sequence,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
