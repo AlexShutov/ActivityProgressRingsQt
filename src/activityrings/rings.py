@@ -142,6 +142,7 @@ def render_gauge_rings(
         size=size,
         layout_manager=manager,
         focus=focus,
+        transparent=True,
         **render_kwargs,
     )
 
@@ -251,6 +252,7 @@ def render_rings(
     targets: dict[str, float] | None = None,
     layout_manager: BaseRingsLayoutManager | None = None,
     focus: Sequence[float] | None = None,
+    transparent: bool = False,
 ) -> Image.Image:
     """Render one frame of the three Activity Rings.
 
@@ -264,6 +266,10 @@ def render_rings(
     (0..1).  Its ``is_selection_enabled`` flag decides whether the focused ring grows in
     thickness (selection) or all rings keep their width (static).  Without a manager the
     existing fixed-geometry ``build_rings`` path is used, so behaviour is unchanged.
+
+    ``transparent`` returns an RGBA overlay (transparent canvas) so the caller can
+    alpha-composite the rings over a live theme; by default the frame is opaque RGB with
+    a solid dark backdrop (standalone use).
     """
     w, h = size
     cx, cy = (w / 2.0, h / 2.0) if center is None else center
@@ -271,7 +277,8 @@ def render_rings(
 
     canvas_w = int(w * ss)
     canvas_h = int(h * ss)
-    img = Image.new("RGBA", (canvas_w, canvas_h), (16, 18, 24, 255))
+    canvas_background = (0, 0, 0, 0) if transparent else (16, 18, 24, 255)
+    img = Image.new("RGBA", (canvas_w, canvas_h), canvas_background)
     px, py = cx * ss, cy * ss
     if layout_manager is not None:
         result = layout_manager.measure(min(w, h), None, focus)
@@ -315,7 +322,8 @@ def render_rings(
 
         img.alpha_composite(sil)
 
-    return img.resize((w, h), Image.Resampling.LANCZOS).convert("RGB")
+    resized = img.resize((w, h), Image.Resampling.LANCZOS)
+    return resized if transparent else resized.convert("RGB")
 
 
 def eased_progress_map(

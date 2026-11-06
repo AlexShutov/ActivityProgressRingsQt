@@ -46,12 +46,12 @@ def test_gauge_ring_bases_returns_ring_base_instances():
     assert all(isinstance(b, RingBase) for b in bases)
 
 
-def test_render_gauge_rings_produces_rgb_frame():
+def test_render_gauge_rings_produces_overlay_frame():
     from activityrings.rings import render_gauge_rings
 
     img = render_gauge_rings(GAUGES, (760, 760), progress={"cpu": 0.6, "gpu": 0.8, "ram": 0.3})
     assert img is not None
-    assert img.mode == "RGB"
+    assert img.mode == "RGBA"  # прозрачный оверлей для укладки поверх темы
     assert img.size == (760, 760)
 
 
@@ -64,7 +64,7 @@ def test_render_gauge_rings_accepts_focus_and_ignores_unknown_target_keys():
         progress={},  # пусто → берутся targets из RingSpec
         focus=[1.0, 0.0, 0.0],
     )
-    assert img.mode == "RGB"
+    assert img.mode == "RGBA"
 
 
 def test_render_gauge_rings_small_canvas_never_crashes():
