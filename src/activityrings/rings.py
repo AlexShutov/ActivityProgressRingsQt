@@ -125,6 +125,10 @@ def render_gauge_rings(
     progress: dict[str, float] | None = None,
     focus: Sequence[float] | None = None,
     layout_manager: BaseRingsLayoutManager | None = None,
+    outer_fraction: float = 0.84,
+    edge_margin: float = 14.0,
+    gap_px: float | None = None,
+    inner_radius_px: float | None = None,
     **render_kwargs,
 ) -> Image.Image:
     """Рендерит кадр «кольцо на датчик» (``gauges``) через ``render_rings``.
@@ -132,11 +136,24 @@ def render_gauge_rings(
     Если ``layout_manager`` не задан, создаётся ``SelectionRingsLayoutManager`` с
     кольцами из ``gauges`` (выделение — strategя выбора колец). ``progress`` — доля
     заполнения на каждый ``key`` (``0..~2``); ``focus`` — per-ring факторы выбора.
+    ``outer_fraction``/``edge_margin`` управляют размером колец (см.
+    ``BaseRingsLayoutManager``): ``outer_fraction`` близко к 1 — кольца заполняют
+    зону почти целиком, ``edge_margin`` — отступ от края зоны (px). ``gap_px`` —
+    фиксированный зазор между краями соседних колец (px); ``None`` → динамический.
+    ``inner_radius_px`` — радиус внутренней границы самого внутреннего кольца
+    (px); ``None`` → кольца в узкой внешней полосе, задаётся явно (напр. 5мм),
+    чтобы кольца были толстыми и почти на весь круг.
     """
     bases = gauge_ring_bases(gauges)
     manager = layout_manager
     if manager is None:
-        manager = SelectionRingsLayoutManager(ring_bases=bases)
+        manager = SelectionRingsLayoutManager(
+            ring_bases=bases,
+            outer_fraction=outer_fraction,
+            edge_margin=edge_margin,
+            ring_gap_px=gap_px,
+            inner_radius=inner_radius_px,
+        )
     return render_rings(
         progress=progress,
         size=size,

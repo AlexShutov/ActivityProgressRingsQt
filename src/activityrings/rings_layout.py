@@ -77,6 +77,8 @@ class BaseRingsLayoutManager:
         ring_bases: Sequence[RingBase] = BASE_RINGS,
         backdrop_alpha: int = 38,
         min_gap_px: float | None = None,
+        ring_gap_px: float | None = None,
+        inner_radius: float | None = None,
     ) -> None:
         self._outer_fraction = outer_fraction
         self._selection_scale = selection_scale
@@ -87,6 +89,14 @@ class BaseRingsLayoutManager:
         self._min_slot = min_slot
         self._ring_bases = list(ring_bases)
         self._backdrop_alpha = backdrop_alpha
+        # Фиксированный зазор между краями соседних колец (px). ``None`` → выводится
+        # из ``gap_for`` (динамический зазор). Задаётся явно, когда нужен точный
+        # «~1мм» между кольцами (см. ``render_gauge_rings``/композит).
+        self._ring_gap_px = ring_gap_px
+        # Радиус внутренней границы САМОГО внутреннего (малого) кольца (px).
+        # ``None`` → кольца занимают внешнюю полосу (``GAUGE_BAND_DEPTH_FRACTION``);
+        # задаётся явно (напр. 5мм), чтобы кольца были толстыми и почти на весь круг.
+        self._inner_radius = inner_radius
         # Минимальный зазор под свечение для пары соседних ВЫБРАННЫХ колец (в px).
         # ``None`` → дефолт из номинальной панели (см. ``rings_strategy``).
         self._min_gap_px = min_gap_px if min_gap_px is not None else DEFAULT_RING_MIN_GAP_PX
@@ -132,6 +142,8 @@ class BaseRingsLayoutManager:
 
     def _resolve_gap(self, short_side: float, count: int, base: float) -> float:
         """Collapse the gap to zero rather than let thin bands crowd the center."""
+        if self._ring_gap_px is not None:
+            return self._ring_gap_px
         gap = self.gap_for(short_side, count)
         if base < self._min_slot and count > 1:
             gap = 0.0
@@ -152,9 +164,18 @@ class BaseRingsLayoutManager:
         """
         ring_bases = self._ring_bases[:count]
         outer_r = self.outer_radius(short_side)
-        base = self.base_widths(outer_r)[:count]
         f = list(focus) if focus is not None else [0.0] * count
-        design_gap = self._resolve_gap(short_side, count, min(base) if base else 0.0)
+        if self._inner_radius is not None:
+            # Заполняем радиальный диапазон [inner_radius, outer_r] кольцами равной
+            # толщины (внутреннее кольцо начинается на ``inner_radius``).
+            design_gap = self._resolve_gap(short_side, count, 0.0)
+            span = outer_r - self._inner_radius
+            band_sum = max(0.0, span - design_gap * (count - 1))
+            per = band_sum / max(1, count)
+            base = [per] * count
+        else:
+            base = self.base_widths(outer_r)[:count]
+            design_gap = self._resolve_gap(short_side, count, min(base) if base else 0.0)
         plan = self._growth_plan(base, f, design_gap, outer_r, count)
         widths = [b * plan.scales[i] for i, b in enumerate(base)]
         radii = layout(widths, plan.gap, outer_r)

@@ -72,3 +72,59 @@ def test_render_gauge_rings_small_canvas_never_crashes():
 
     img = render_gauge_rings(GAUGES, (48, 48))
     assert img.size == (48, 48)
+
+
+def test_render_gauge_rings_outer_fraction_enlarges_rings():
+    from activityrings.rings import render_gauge_rings
+
+    progress = {key: 1.0 for key, _, _, _ in GAUGES}
+    tight = render_gauge_rings(GAUGES, (760, 760), progress=progress, outer_fraction=0.96)
+    reduced = render_gauge_rings(GAUGES, (760, 760), progress=progress, outer_fraction=0.5)
+    # Большая доля → кольца крупнее → шире ненулевая область.
+    assert tight.getbbox()[2] > reduced.getbbox()[2]
+    assert tight.getbbox()[3] > reduced.getbbox()[3]
+    assert tight.mode == "RGBA"
+
+
+def test_ring_gap_px_override_controls_spacing():
+    from activityrings.rings import gauge_ring_bases
+    from activityrings.rings_layout import SelectionRingsLayoutManager
+
+    count = len(GAUGES)
+    bases = gauge_ring_bases(GAUGES)
+    dynamic = SelectionRingsLayoutManager(
+        ring_bases=bases, outer_fraction=0.96, edge_margin=14.0
+    )
+    tight = SelectionRingsLayoutManager(
+        ring_bases=bases, outer_fraction=0.96, edge_margin=14.0, ring_gap_px=7.0
+    )
+    assert dynamic.measure(440, count).gap > tight.measure(440, count).gap  # 28 vs 7
+    assert tight.measure(440, count).gap == pytest.approx(7.0)
+
+
+def test_inner_radius_sizes_innermost_ring_and_thickens():
+    from activityrings.rings import gauge_ring_bases
+    from activityrings.rings_layout import SelectionRingsLayoutManager
+
+    count = len(GAUGES)
+    bases = gauge_ring_bases(GAUGES)
+    narrow = SelectionRingsLayoutManager(
+        ring_bases=bases, outer_fraction=0.96, edge_margin=14.0, ring_gap_px=7.0
+    )
+    filled = SelectionRingsLayoutManager(
+        ring_bases=bases,
+        outer_fraction=0.96,
+        edge_margin=14.0,
+        ring_gap_px=7.0,
+        inner_radius=34.0,
+    )
+    res = filled.measure(440, count)
+    # Внутренняя граница самого внутреннего кольца == заданному ``inner_radius``.
+    innermost = res.geometry[-1]
+    assert innermost.radius - innermost.width / 2 == pytest.approx(34.0)
+    # Внешнее кольцо по-прежнему прижато к ``outer_r`` (внешний край).
+    outermost = res.geometry[0]
+    assert outermost.radius + outermost.width / 2 == pytest.approx(res.outer_radius)
+    # Кольца толще, чем в узкой внешней полосе.
+    narrow_res = narrow.measure(440, count)
+    assert outermost.width > narrow_res.geometry[0].width
