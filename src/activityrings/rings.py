@@ -520,8 +520,18 @@ def render_rings(
     # светится цветом СВОЕГО сектора, остальные гаснут.  Число выбранных не считаем
     # и толщину не меняем (постоянная ширина у всех колец).
     focus_values: list[float] = list(focus) if focus is not None else []
+    # ``selection_strength`` — максимум фокуса по кольцам.  Гаснуть подсветкой можно
+    # ТОЛЬКО когда хоть одно кольцо реально активно (фокус > порога), иначе в окне
+    # «пропуска» (фокус всех колец = 0) кольца гасли бы до минимума и выглядели бы
+    # тёмными и неподсвеченными — как в линейном индикаторе, при отсутствии
+    # выделения все элементы показываются в полной яркости (см. ``dim`` в
+    # ``common.selection.SelectionController``).
+    selection_strength = max(focus_values) if focus_values else 0.0
     selection_on = bool(
-        focus_values and layout_manager is not None and layout_manager.is_selection_enabled
+        focus_values
+        and layout_manager is not None
+        and layout_manager.is_selection_enabled
+        and selection_strength > RING_ACTIVE_EPSILON
     )
 
     for index, spec in enumerate(rings):

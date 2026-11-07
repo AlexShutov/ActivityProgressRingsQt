@@ -51,6 +51,19 @@ def test_focus_dims_inactive_rings():
     assert _alpha_sums(lit) != _alpha_sums(base)
 
 
+def test_zero_focus_keeps_full_brightness_like_linear():
+    # Окно «пропуска» (фокус всех колец = 0) не должно гасить кольца до минимума:
+    # при отсутствии активного выделения кольца показываются в полной яркости, как в
+    # линейном индикаторе (``selection_dim`` возвращает 1.0 при ``strength <= eps``).
+    # Регрессия: раньше ``selection_on`` был истинным при любом непустом фокусе, и
+    # нулевой фокус затемнял все кольца до ``RING_DIM_MIN`` — они выглядели тёмными и
+    # неподсвеченными.
+    base = render_gauge_rings(GAUGES, (200, 200), progress={}, focus=None)
+    skip = render_gauge_rings(GAUGES, (200, 200), progress={}, focus=[0.0, 0.0, 0.0])
+    assert _alpha_sums(skip) == _alpha_sums(base)
+    assert skip.tobytes() == base.tobytes()
+
+
 def test_active_glow_uses_ring_color_not_white():
     # Ореол окрашен цветом самого кольца (цвет столбца палитры), а не белым: кадры с
     # активным красным и синим кольцом одного датчика различаются.
