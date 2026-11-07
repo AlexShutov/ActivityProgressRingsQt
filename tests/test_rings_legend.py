@@ -42,7 +42,6 @@ def _manager(placement: LegendPlacement, *, center, radius, view):
         font=_font(),
         text_color=(255, 255, 255),
         padding_px=2.0,
-        corner_radius_px=4.0,
         letter_spacing_px=3.0,
     )
 
@@ -77,7 +76,8 @@ def test_legend_left_backdrops_fit_inside_view():
     for label in mgr.layout(LABELS, COLORS):
         text_w, text_h = mgr._measure(label.text)
         box_w, box_h = text_w + 2 * 2.0, text_h + 2 * 2.0
-        left = label.center[0] - box_w / 2.0
+        # Подложка пристыкована кольцевой стороной к полярной точке (см. render).
+        left = label.center[0] - box_w if label.center[0] <= EDGE_CENTER[0] else label.center[0]
         top = label.center[1] - box_h / 2.0
         assert left >= 0 and top >= 0
         assert left + box_w <= EDGE_VIEW[0] and top + box_h <= EDGE_VIEW[1]
@@ -106,3 +106,29 @@ def test_legend_empty_labels_is_noop():
     assert mgr.layout([], []) == []
     assert mgr.render(canvas, [], []) is canvas
     assert canvas.getchannel("A").getbbox() is None
+
+
+def test_legend_label_value_text():
+    mgr = _manager(LegendPlacement.LEFT, center=EDGE_CENTER, radius=EDGE_RADIUS, view=EDGE_VIEW)
+    positions = mgr.layout(["CPU", "GPU"], [(1, 2, 3), (4, 5, 6)], ["73%", "81%"])
+    assert [p.text for p in positions] == ["CPU: 73%", "GPU: 81%"]
+    assert [p.value for p in positions] == ["73%", "81%"]
+    assert positions[0].label == "CPU"
+
+
+def test_legend_backdrop_width_not_dependent_on_own_value():
+    # Ширина подложки для подписи не зависит от ШИРИНЫ её собственного значения:
+    # она определяется зарезервированной зоной (максимумом среди значений кадра).
+    mgr = _manager(LegendPlacement.LEFT, center=EDGE_CENTER, radius=EDGE_RADIUS, view=EDGE_VIEW)
+    zone = mgr._value_zone_px(["100%", "100%"])
+    narrow = mgr._box_size("CPU", "7%", zone)[0]
+    wide = mgr._box_size("CPU", "100%", zone)[0]
+    assert narrow == wide
+
+
+def test_legend_renders_value_backdrops():
+    mgr = _manager(LegendPlacement.LEFT, center=EDGE_CENTER, radius=EDGE_RADIUS, view=EDGE_VIEW)
+    canvas = Image.new("RGBA", EDGE_VIEW, (0, 0, 0, 0))
+    out = mgr.render(canvas, ["CPU", "GPU"], [(1, 2, 3), (4, 5, 6)], ["73%", "81%"])
+    assert out is canvas
+    assert canvas.getchannel("A").getbbox() is not None
