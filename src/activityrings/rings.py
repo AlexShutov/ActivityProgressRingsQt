@@ -160,6 +160,7 @@ def render_gauge_rings(
     track_color: Color | None = None,
     start_corner_fraction: float = 0.5,
     end_corner_fraction: float = 0.5,
+    full_ring_glow: bool = False,
     **render_kwargs,
 ) -> Image.Image:
     """Рендерит кадр «кольцо на датчик» (``gauges``) через ``render_rings``.
@@ -174,6 +175,9 @@ def render_gauge_rings(
     ``inner_radius_px`` — радиус внутренней границы самого внутреннего кольца
     (px); ``None`` → кольца в узкой внешней полосе, задаётся явно (напр. 5мм),
     чтобы кольца были толстыми и почти на весь круг.
+
+    ``full_ring_glow`` пробрасывается в ``render_rings``: активное кольцо светится
+    по всей окружности своим цветом (см. ``render_rings``).
     """
     bases = gauge_ring_bases(gauges)
     manager = layout_manager
@@ -194,6 +198,7 @@ def render_gauge_rings(
         track_color=track_color,
         start_corner_fraction=start_corner_fraction,
         end_corner_fraction=end_corner_fraction,
+        full_ring_glow=full_ring_glow,
         **render_kwargs,
     )
 
@@ -446,6 +451,7 @@ def render_rings(
     track_color: Color | None = None,
     start_corner_fraction: float = 0.5,
     end_corner_fraction: float = 0.5,
+    full_ring_glow: bool = False,
 ) -> Image.Image:
     """Render one frame of the three Activity Rings.
 
@@ -469,6 +475,12 @@ def render_rings(
     прозрачная версия фона», а не цвет самого кольца, поэтому фоны не разноцветные.
     Композит передаёт сюда ``palette["muted"]``, чтобы цвет трека совпадал с
     подложкой линейного индикатора.
+
+    ``full_ring_glow`` — светить ореолом активное кольцо ПО ВСЕЙ окружности в его
+    собственном цвете, а не только по доле заполнения (``progress``).  По умолчанию
+    ``False``: ореол повторяет дугу (весь пройденный сектор).  Включается в режиме
+    градиента «значение → цвет», чтобы низкозначное активное кольцо не оставалось
+    преимущественно серым (здесь ореол слишком мал и серый трек доминирует).
     """
     w, h = size
     cx, cy = (w / 2.0, h / 2.0) if center is None else center
@@ -550,13 +562,18 @@ def render_rings(
             # Ореол = САМ сектор (полная ширина, скруглённые концы) в цвете кольца,
             # размытый позади чёткой дуги: светится весь сектор — и бока, и начало,
             # и конец.  Альфа следует за фокусом, поэтому при «пропуске» плавно гаснет.
+            # В ``full_ring_glow`` ореол обходит ВСЮ окружность в цвете кольца, чтобы
+            # активное кольцо всегда было подсвечено своим цветом (не серым треком).
             glow_alpha = int(round(GLOW_ALPHA * min(1.0, ring_focus)))
             glow = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            glow_sweep = 1.0 if full_ring_glow else frac
+            glow_start_corner = 0.0 if full_ring_glow else spec.start_corner_fraction
+            glow_end_corner = 0.0 if full_ring_glow else spec.end_corner_fraction
             _draw_arc_segments(
-                glow, px, py, r, width, frac,
+                glow, px, py, r, width, glow_sweep,
                 spec.color, spec.color, spec.start_angle, segs, alpha=glow_alpha,
-                start_corner_fraction=spec.start_corner_fraction,
-                end_corner_fraction=spec.end_corner_fraction,
+                start_corner_fraction=glow_start_corner,
+                end_corner_fraction=glow_end_corner,
             )
             img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(GLOW_SOFTNESS * ss)))
 

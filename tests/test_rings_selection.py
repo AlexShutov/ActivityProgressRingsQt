@@ -61,3 +61,31 @@ def test_active_glow_uses_ring_color_not_white():
         [("a", "A", (56, 120, 240), 1.0)], (200, 200), progress={}, focus=[1.0],
     )
     assert red.tobytes() != blue.tobytes()
+
+
+def test_full_ring_glow_covers_partial_active_ring():
+    # Низкозначное активное кольцо (дуга 0.2) — ореол «по всей окружности» покрывает
+    # весь трек цветом кольца, поэтому непрозрачности больше, чем у ореола «по доле
+    # заполнения»: иначе активное кольцо остаётся преимущественно серым (трек muted).
+    partial = {"cpu": 0.2}
+    ring = [("cpu", "CPU", (250, 55, 95), 1.0)]
+    swept = render_gauge_rings(
+        ring, (200, 200), progress=partial, focus=[1.0], full_ring_glow=False,
+    )
+    full = render_gauge_rings(
+        ring, (200, 200), progress=partial, focus=[1.0], full_ring_glow=True,
+    )
+    assert _alpha_sums(full) > _alpha_sums(swept)
+    assert full.tobytes() != swept.tobytes()
+
+
+def test_full_ring_glow_default_off_matches_swept():
+    # По умолчанию (full_ring_glow=False) кадр совпадает с обычным ореолом по дуге:
+    # поведение обычного (не градиентного) режима не меняется.
+    partial = {"cpu": 0.2}
+    ring = [("cpu", "CPU", (250, 55, 95), 1.0)]
+    default = render_gauge_rings(ring, (200, 200), progress=partial, focus=[1.0])
+    swept = render_gauge_rings(
+        ring, (200, 200), progress=partial, focus=[1.0], full_ring_glow=False,
+    )
+    assert default.tobytes() == swept.tobytes()
