@@ -28,6 +28,7 @@ from PIL import Image, ImageFilter
 
 from common.background import IndicatorBackgroundDrawer
 from common.easing import ease_out_cubic, lerp, lerp_color
+from common.selection import SelectionController
 
 from .rings_focus import RingBase
 from .rings_layout import BaseRingsLayoutManager, SelectionRingsLayoutManager
@@ -45,6 +46,12 @@ _DEFAULT_TARGETS: dict[str, float] = {"move": 0.72, "exercise": 0.86, "stand": 0
 # Глубина (по радиусу) всей группы «кольцо на датчик» как доля ``outer_radius``:
 # толщина одного кольца = ``GAUGE_BAND_DEPTH_FRACTION`` / число датчиков.
 GAUGE_BAND_DEPTH_FRACTION = 0.4
+
+# Выделение (selection) — затемнение невыделенных колец и мягкое свечение активного.
+# Пороги затемнения и «какое кольцо активно» общие (``common.selection``); здесь —
+# только зависящие от формы параметры ореола: размытие (px при 1x) и альфа дуги свечения.
+GLOW_SOFTNESS = 6.0
+GLOW_ALPHA = 150
 
 
 @dataclass(frozen=True)
@@ -335,7 +342,23 @@ def render_rings(
     else:
         rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
 
-    for spec in rings:
+    # Выделение (selection): когда менеджер раскладки включает его и передан ``focus`` —
+    # невыделенные кольца гаснут, а активное светится мягким ореолом.  Пороги затемнения
+    # и «какое кольцо активно» общие (``common.selection``) и не зависят от формы.
+    focus_values: list[float] = list(focus) if focus is not None else []
+    selection_on = bool(
+        focus_values and layout_manager is not None and layout_manager.is_selection_enabled
+    )
+    selection_strength = (
+        SelectionController.selection_strength(focus_values) if selection_on else 0.0
+    )
+    active_index = (
+        SelectionController.active_index_of(focus_values, selection_on)
+        if selection_on
+        else None
+    )
+
+    for index, spec in enumerate(rings):
         r = spec.radius
         width = spec.width
         frac = float(progress.get(spec.key, spec.target) if progress else spec.target)
@@ -346,9 +369,16 @@ def render_rings(
                 img, px, py, r, width, drawer.backdrop(spec.backdrop_alpha)
             )
 
+        ring_focus = (
+            focus_values[index] if (selection_on and index < len(focus_values)) else 0.0
+        )
+        dim = SelectionController.dim(ring_focus, selection_on, selection_strength)
+        arc_alpha = int(round(255.0 * dim))
+
         sil = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
         _draw_arc_segments(
-            sil, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs
+            sil, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs,
+            alpha=arc_alpha,
         )
 
         if spec.shadow:
@@ -357,6 +387,15 @@ def render_rings(
             sh.paste((0, 0, 0, 120), (int(off), int(off)), sil)
             sh = sh.filter(ImageFilter.GaussianBlur(shadow_softness * ss))
             img.alpha_composite(sh)
+
+        if selection_on and index == active_index:
+            # Мягкое свечение активного кольца: размытая копия дуги позади чёткой дуги.
+            glow = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            _draw_arc_segments(
+                glow, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs,
+                alpha=GLOW_ALPHA,
+            )
+            img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(GLOW_SOFTNESS * ss)))
 
         img.alpha_composite(sil)
 
