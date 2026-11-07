@@ -23,6 +23,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from common.selection import (
+    SELECTION_COUNT_EPSILON,
+    clamp_fraction,
+    count_selected,
+    has_adjacent_selected,
+)
+
 
 @dataclass(frozen=True)
 class RingGrowthPlan:
@@ -32,20 +39,17 @@ class RingGrowthPlan:
     gap: float
 
 
-def count_selected(focus: Sequence[float]) -> int:
-    """Сколько колец сейчас «выбрано» (фокус строго больше нуля)."""
-    return sum(1 for f in focus if f > FOCUS_ACTIVE_EPSILON)
-
-
 def select_ring_strategy(focus: Sequence[float], selection_on: bool):
     """Возвращает стратегию по числу выбранных колец.
 
     Больше одной выбранной — ``SelectMultipleIndicators``; одна (или ни одной, в том
     числе при выключенном выделении) — ``SelectSingleIndicator``.
     """
-    if selection_on and count_selected(focus) > 1:
-        return SelectMultipleIndicators()
-    return SelectSingleIndicator()
+    return (
+        SelectMultipleIndicators()
+        if selection_on and count_selected(focus) > 1
+        else SelectSingleIndicator()
+    )
 
 
 def min_gap_px_for(
@@ -100,7 +104,7 @@ class SelectSingleIndicator(RingSelectionStrategy):
         min_gap_px: float,
         outer_r: float,
     ) -> RingGrowthPlan:
-        scales = [1.0 + (scale_full - 1.0) * _fraction(focus[i]) for i in range(count)]
+        scales = [1.0 + (scale_full - 1.0) * clamp_fraction(focus[i]) for i in range(count)]
         return RingGrowthPlan(scales, design_gap)
 
 
@@ -118,8 +122,8 @@ class SelectMultipleIndicators(RingSelectionStrategy):
         min_gap_px: float,
         outer_r: float,
     ) -> RingGrowthPlan:
-        scales = [1.0 + (scale_full - 1.0) * _fraction(focus[i]) for i in range(count)]
-        if not _has_adjacent_selected(focus, count):
+        scales = [1.0 + (scale_full - 1.0) * clamp_fraction(focus[i]) for i in range(count)]
+        if not has_adjacent_selected(focus, count):
             return RingGrowthPlan(scales, design_gap)
         # Соседние выбранные: поднимаем зазор под свечение и урезаем рост, чтобы
         # увеличенный зазор поместился в радиальный бюджет ``outer_r`` (внутреннее
@@ -127,9 +131,9 @@ class SelectMultipleIndicators(RingSelectionStrategy):
         target_gap = max(design_gap, min_gap_px)
         sum_base = sum(base_widths)
         grow_weight = sum(
-            base_widths[i] * _fraction(focus[i])
+            base_widths[i] * clamp_fraction(focus[i])
             for i in range(count)
-            if focus[i] > FOCUS_ACTIVE_EPSILON
+            if focus[i] > SELECTION_COUNT_EPSILON
         )
         room_after_gap = outer_r - sum_base - target_gap * (count - 1)
         if room_after_gap <= RADIAL_FIT_EPSILON or grow_weight <= 0.0:
@@ -138,27 +142,11 @@ class SelectMultipleIndicators(RingSelectionStrategy):
         cap = 1.0 + min(
             scale_full - 1.0, (room_after_gap - RADIAL_FIT_EPSILON) / grow_weight
         )
-        capped = [1.0 + (cap - 1.0) * _fraction(focus[i]) for i in range(count)]
+        capped = [1.0 + (cap - 1.0) * clamp_fraction(focus[i]) for i in range(count)]
         return RingGrowthPlan(capped, target_gap)
 
 
-def _has_adjacent_selected(focus: Sequence[float], count: int) -> bool:
-    """Есть ли среди выбранных колец соседняя пара ``i`` и ``i+1``."""
-    selected = [
-        i for i in range(count) if i < len(focus) and focus[i] > FOCUS_ACTIVE_EPSILON
-    ]
-    return any(cur == prev + 1 for prev, cur in zip(selected, selected[1:], strict=False))
-
-
-def _fraction(value: float) -> float:
-    """Доля фокуса, зажатая в ``[0, 1]``."""
-    return max(0.0, min(1.0, float(value)))
-
-
 # --- Константы ---
-# Порог «кольцо выбрано»: строго больше нуля, но с крошечным допуском, чтобы
-# численный ноль (0.0) или остатки после плавного затухания не считались выбором.
-FOCUS_ACTIVE_EPSILON = 1e-9
 # Запас радиального бюджета, чтобы внутреннее кольцо не прошло ровно через центр
 # (иначе ``rings_focus.layout`` бросает ``ValueError``).
 RADIAL_FIT_EPSILON = 0.5
