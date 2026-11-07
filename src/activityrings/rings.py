@@ -27,8 +27,7 @@ from dataclasses import dataclass
 from PIL import Image, ImageFilter
 
 from common.background import IndicatorBackgroundDrawer
-from common.easing import ease_out_cubic, lerp, lerp_color
-from common.selection import SELECTION_ACTIVE_EPSILON, SelectionController
+from common.easing import ease_out_cubic, lerp
 
 from .rings_focus import RingBase
 from .rings_layout import BaseRingsLayoutManager, SelectionRingsLayoutManager
@@ -47,15 +46,17 @@ _DEFAULT_TARGETS: dict[str, float] = {"move": 0.72, "exercise": 0.86, "stand": 0
 # толщина одного кольца = ``GAUGE_BAND_DEPTH_FRACTION`` / число датчиков.
 GAUGE_BAND_DEPTH_FRACTION = 0.4
 
-# Выделение (selection) — затемнение невыделенных колец и яркий ореол активного.
-# Пороги затемнения и «какое кольцо активно» общие (``common.selection``); здесь —
-# только зависящие от формы параметры ореола вокруг активного кольца: размытие (px
-# при 1x), альфа дуги свечения, ширина ореола как доля толщины кольца и высветление
-# к белому, чтобы «подсветка вокруг» читалась поверх живой темы.
-GLOW_SOFTNESS = 10.0
-GLOW_ALPHA = 190
-GLOW_BAND_SCALE = 1.8
-GLOW_WHITE_BLEND = 0.5
+# Выделение колец — собственная простая логика: подсвечивается ОДНО активное кольцо,
+# остальные гаснут.  Актива — кольцо с ``focus > RING_ACTIVE_EPSILON``; невыделенные
+# гаснут до ``RING_DIM_MIN``.  Здесь не считается число выбранных колец (в отличие от
+# общего ``common.selection``, которым пользуется линейный индикатор).
+RING_ACTIVE_EPSILON = 1e-6
+RING_DIM_MIN = 0.35
+# Параметры ореола вокруг активного кольца: размытие (px при 1x) и альфа дуги.
+# Ореол рисуется КАК САМ СЕКТОР (начало+конец+бока), цветом кольца (цвет столбца
+# палитры), без увеличения ширины — «весь сектор светится», а не только бока.
+GLOW_SOFTNESS = 9.0
+GLOW_ALPHA = 150
 
 # Точки на одну дугу скругления конца сектора (чем больше — тем глаже филет).
 CORNER_SAMPLES = 8
@@ -503,15 +504,12 @@ def render_rings(
             end_corner_fraction=end_corner_fraction,
         )
 
-    # Выделение (selection): когда менеджер раскладки включает его и передан ``focus`` —
-    # невыделенные кольца гаснут, а выбранные светятся ореолом.  Пороги затемнения и
-    # «какое кольцо выбрано» общие (``common.selection``) и не зависят от формы.
+    # Выделение колец — своя простая логика: активное кольцо (``focus`` > порога)
+    # светится цветом СВОЕГО сектора, остальные гаснут.  Число выбранных не считаем
+    # и толщину не меняем (постоянная ширина у всех колец).
     focus_values: list[float] = list(focus) if focus is not None else []
     selection_on = bool(
         focus_values and layout_manager is not None and layout_manager.is_selection_enabled
-    )
-    selection_strength = (
-        SelectionController.selection_strength(focus_values) if selection_on else 0.0
     )
 
     for index, spec in enumerate(rings):
@@ -528,7 +526,9 @@ def render_rings(
         ring_focus = (
             focus_values[index] if (selection_on and index < len(focus_values)) else 0.0
         )
-        dim = SelectionController.dim(ring_focus, selection_on, selection_strength)
+        dim = (
+            RING_DIM_MIN + (1.0 - RING_DIM_MIN) * ring_focus if selection_on else 1.0
+        )
         arc_alpha = int(round(255.0 * dim))
 
         sil = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
@@ -546,16 +546,15 @@ def render_rings(
             sh = sh.filter(ImageFilter.GaussianBlur(shadow_softness * ss))
             img.alpha_composite(sh)
 
-        if selection_on and ring_focus > SELECTION_ACTIVE_EPSILON:
-            # Яркий ореол вокруг выбранного кольца: широкая дуга, высветленная к белому
-            # и размытая (позади чёткой дуги) — «подсветка вокруг» выбранного элемента
-            # читается чётко даже поверх живой темы.  Ореол появляется/гаснет вместе с
-            # фокусом, поэтому при «пропуске» плавно исчезает.
-            glow_color = lerp_color(spec.color, (255, 255, 255), GLOW_WHITE_BLEND)
+        if selection_on and ring_focus > RING_ACTIVE_EPSILON:
+            # Ореол = САМ сектор (полная ширина, скруглённые концы) в цвете кольца,
+            # размытый позади чёткой дуги: светится весь сектор — и бока, и начало,
+            # и конец.  Альфа следует за фокусом, поэтому при «пропуске» плавно гаснет.
+            glow_alpha = int(round(GLOW_ALPHA * min(1.0, ring_focus)))
             glow = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
             _draw_arc_segments(
-                glow, px, py, r, width * GLOW_BAND_SCALE, frac,
-                glow_color, glow_color, spec.start_angle, segs, alpha=GLOW_ALPHA,
+                glow, px, py, r, width, frac,
+                spec.color, spec.color, spec.start_angle, segs, alpha=glow_alpha,
                 start_corner_fraction=spec.start_corner_fraction,
                 end_corner_fraction=spec.end_corner_fraction,
             )

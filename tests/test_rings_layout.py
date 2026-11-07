@@ -1,9 +1,9 @@
 """Unit tests for the Activity-Rings layout managers (no Qt/Pillow).
 
 Covers the dynamic gap (count + screen size), the edge-margin clamp on the anchored
-outer radius, the static equal-width layout, the selection growth (focused ring grows
-thickness, neighbours keep their width), the gap-preserving reflow, and that
-``is_selection_enabled`` discriminates the two modes.
+outer radius, the equal-width layout (no width growth on selection — fused width stays
+constant), the gap-preserving reflow, and that ``is_selection_enabled`` discriminates
+the two modes.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
@@ -104,11 +104,12 @@ def test_static_three_rings():
 
 
 # -- selection layout --------------------------------------------------------
-def test_selection_grows_focused_ring():
+def test_selection_keeps_constant_width_when_ring_focused():
     mgr = SelectionRingsLayoutManager()
     res = mgr.measure(760.0, None, [1.0, 0.0, 0.0])
     base = mgr.base_widths(res.outer_radius)
-    assert res[0].width == pytest.approx(base[0] * mgr.selection_scale)
+    # Рост убран: активное кольцо НЕ утолщается, все кольца держат постоянную ширину.
+    assert res[0].width == pytest.approx(base[0])
     assert res[1].width == pytest.approx(base[1])
     assert res[2].width == pytest.approx(base[2])
 
@@ -117,7 +118,7 @@ def test_selection_neighbors_keep_width_when_inner_focused():
     mgr = SelectionRingsLayoutManager()
     res = mgr.measure(760.0, None, [0.0, 1.0, 0.0])
     base = mgr.base_widths(res.outer_radius)
-    assert res[1].width == pytest.approx(base[1] * mgr.selection_scale)
+    assert res[1].width == pytest.approx(base[1])
     assert res[0].width == pytest.approx(base[0])
     assert res[2].width == pytest.approx(base[2])
 

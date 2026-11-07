@@ -49,3 +49,15 @@ def test_focus_dims_inactive_rings():
     # Подсветка одного кольца меняет кадр (невыделенные гаснут, активное светится).
     assert base.tobytes() != lit.tobytes()
     assert _alpha_sums(lit) != _alpha_sums(base)
+
+
+def test_active_glow_uses_ring_color_not_white():
+    # Ореол окрашен цветом самого кольца (цвет столбца палитры), а не белым: кадры с
+    # активным красным и синим кольцом одного датчика различаются.
+    red = render_gauge_rings(
+        [("a", "A", (250, 55, 90), 1.0)], (200, 200), progress={}, focus=[1.0],
+    )
+    blue = render_gauge_rings(
+        [("a", "A", (56, 120, 240), 1.0)], (200, 200), progress={}, focus=[1.0],
+    )
+    assert red.tobytes() != blue.tobytes()

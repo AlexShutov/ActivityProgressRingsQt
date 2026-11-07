@@ -1,22 +1,22 @@
 """Layout managers for the Activity Rings overlay (MIT).
 
 Mirrors the dashboard adapter layout-manager idea (:mod:`adapter.layout`): a base
-class holds the shared configuration (outer-radius fraction, selection scale, edge
-margin, dynamic gap) and two subclasses implement the two modes selected by the
-class attribute :attr:`BaseRingsLayoutManager.is_selection_enabled`:
+class holds the shared configuration (outer-radius fraction, edge margin, dynamic
+gap) and two subclasses implement the two modes selected by the class attribute
+:attr:`BaseRingsLayoutManager.is_selection_enabled`:
 
 - ``StaticRingsLayoutManager`` (``is_selection_enabled=False``): every ring shares the
   same thickness; radii come from ``rings_focus.layout`` with the dynamic gap.  All
   rings sit inside the panel with ``edge_margin`` to the outer edge.
-- ``SelectionRingsLayoutManager`` (``is_selection_enabled=True``): the focused ring
-  grows in thickness (``width * selection_scale``) while the others keep their size;
-  radii also come from ``layout()``, so the constant band-edge gap is preserved at
-  every frame and the neighbours never shrink in width.
+- ``SelectionRingsLayoutManager`` (``is_selection_enabled=True``): rings keep a
+  CONSTANT thickness (no growth on selection — the old width increase shrank
+  neighbours and looked bad); the flag only tells the renderer to highlight the
+  active ring and dim the rest.  Radii also come from ``layout()``, so the constant
+  band-edge gap is preserved at every frame.
 
 The outermost band's OUTER edge is anchored at ``outer_radius``, which is clamped so
-it keeps ``edge_margin`` (~2 mm) to the panel edge, so an extreme (outermost) ring,
-when selected, never overflows the panel.  ``FocusTimeline`` computes the per-ring
-eased ``focus`` factors; a layout manager turns those factors into the final
+it keeps ``edge_margin`` (~2 mm) to the panel edge.  ``FocusTimeline`` computes the
+per-ring eased ``focus`` factors; a layout manager turns those factors into the final
 {radius, width} geometry.
 """
 # SPDX-License-Identifier: MIT
@@ -26,7 +26,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .rings_focus import BASE_RINGS, RingBase, layout
-from .rings_strategy import DEFAULT_RING_MIN_GAP_PX, RingGrowthPlan, select_ring_strategy
+
+
+@dataclass(frozen=True)
+class RingGrowthPlan:
+    """План роста колец: per-ring ``scales`` и эффективный ``gap``.
+
+    Сейчас рост отключён (кольца не меняют толщину при выделении), поэтому все
+    ``scales`` равны ``1.0``; ``gap`` — зазор между краями соседних колец.
+    """
+
+    scales: list[float]
+    gap: float
 
 
 @dataclass(frozen=True)
@@ -68,7 +79,6 @@ class BaseRingsLayoutManager:
         self,
         *,
         outer_fraction: float = 0.84,
-        selection_scale: float = 1.22,
         edge_margin: float = 14.0,
         gap_min: float = 8.0,
         gap_max: float = 28.0,
@@ -76,12 +86,10 @@ class BaseRingsLayoutManager:
         min_slot: float = 8.0,
         ring_bases: Sequence[RingBase] = BASE_RINGS,
         backdrop_alpha: int = 38,
-        min_gap_px: float | None = None,
         ring_gap_px: float | None = None,
         inner_radius: float | None = None,
     ) -> None:
         self._outer_fraction = outer_fraction
-        self._selection_scale = selection_scale
         self._edge_margin = edge_margin
         self._gap_min = gap_min
         self._gap_max = gap_max
@@ -97,17 +105,10 @@ class BaseRingsLayoutManager:
         # ``None`` → кольца занимают внешнюю полосу (``GAUGE_BAND_DEPTH_FRACTION``);
         # задаётся явно (напр. 5мм), чтобы кольца были толстыми и почти на весь круг.
         self._inner_radius = inner_radius
-        # Минимальный зазор под свечение для пары соседних ВЫБРАННЫХ колец (в px).
-        # ``None`` → дефолт из номинальной панели (см. ``rings_strategy``).
-        self._min_gap_px = min_gap_px if min_gap_px is not None else DEFAULT_RING_MIN_GAP_PX
 
     @property
     def outer_fraction(self) -> float:
         return self._outer_fraction
-
-    @property
-    def selection_scale(self) -> float:
-        return self._selection_scale
 
     @property
     def edge_margin(self) -> float:
@@ -231,47 +232,13 @@ class StaticRingsLayoutManager(BaseRingsLayoutManager):
 
 
 class SelectionRingsLayoutManager(BaseRingsLayoutManager):
-    """The focused ring grows in thickness; the others keep their size.
+    """Кольца НЕ меняют толщину при выделении; флаг включает подсветку/затемнение.
 
-    ``outer_radius`` is already clamped to ``short_side/2 - edge_margin``, so when the
-    outermost ring is focused its outer edge keeps ~2 mm to the panel edge.  Radii come
-    from ``rings_focus.layout`` so the band-edge gap stays constant; neighbours keep
-    their width (they only reflow inward to preserve the gap).
+    Рост убран (увеличение толщины выделенного кольца сжимало соседей и выглядело
+    плохо) — все кольца держат постоянную толщину, как в статичной раскладке.  Зато
+    ``is_selection_enabled = True``, чтобы рендерер подсвечивал активное кольцо и
+    затемнял остальные.  Конструктор базового класса уже даёт постоянные ``scales``
+    в ``_growth_plan``, поэтому переопределять его не нужно.
     """
 
     is_selection_enabled = True
-
-    def _growth_plan(
-        self,
-        base: Sequence[float],
-        focus: Sequence[float],
-        design_gap: float,
-        outer_r: float,
-        count: int,
-    ) -> RingGrowthPlan:
-        """План роста выбирается стратегией по числу выбранных колец.
-
-        ``selection_on`` здесь всегда True (это Selection-менеджер).  Одно кольцо
-        (или ни одного) растёт на ``selection_scale``; при нескольких выбранных
-        ``SelectMultipleIndicators`` поднимает зазор под свечение и урезает рост,
-        если выбранные соседние.
-        """
-        strategy = select_ring_strategy(focus, True)
-        return strategy.plan(
-            count=count,
-            base_widths=base,
-            focus=focus,
-            scale_full=self._selection_scale,
-            design_gap=design_gap,
-            min_gap_px=self._min_gap_px,
-            outer_r=outer_r,
-        )
-
-    def _widths(self, outer_r: float, count: int, focus: Sequence[float] | None) -> list[float]:
-        scale = self._selection_scale
-        base = self.base_widths(outer_r)[:count]
-        f = list(focus) if focus is not None else [0.0] * count
-        return [
-            b * (1.0 + (scale - 1.0) * (max(0.0, min(1.0, f[i])) if i < len(f) else 0.0))
-            for i, b in enumerate(base)
-        ]
