@@ -47,11 +47,15 @@ _DEFAULT_TARGETS: dict[str, float] = {"move": 0.72, "exercise": 0.86, "stand": 0
 # толщина одного кольца = ``GAUGE_BAND_DEPTH_FRACTION`` / число датчиков.
 GAUGE_BAND_DEPTH_FRACTION = 0.4
 
-# Выделение (selection) — затемнение невыделенных колец и мягкое свечение активного.
+# Выделение (selection) — затемнение невыделенных колец и яркий ореол активного.
 # Пороги затемнения и «какое кольцо активно» общие (``common.selection``); здесь —
-# только зависящие от формы параметры ореола: размытие (px при 1x) и альфа дуги свечения.
-GLOW_SOFTNESS = 6.0
-GLOW_ALPHA = 150
+# только зависящие от формы параметры ореола вокруг активного кольца: размытие (px
+# при 1x), альфа дуги свечения, ширина ореола как доля толщины кольца и высветление
+# к белому, чтобы «подсветка вокруг» читалась поверх живой темы.
+GLOW_SOFTNESS = 10.0
+GLOW_ALPHA = 190
+GLOW_BAND_SCALE = 1.8
+GLOW_WHITE_BLEND = 0.5
 
 
 @dataclass(frozen=True)
@@ -389,11 +393,14 @@ def render_rings(
             img.alpha_composite(sh)
 
         if selection_on and index == active_index:
-            # Мягкое свечение активного кольца: размытая копия дуги позади чёткой дуги.
+            # Яркий ореол вокруг активного кольца: широкая дуга, высветленная к белому
+            # и размытая (позади чёткой дуги) — «подсветка вокруг» выбранного элемента
+            # читается чётко даже поверх живой темы.
+            glow_color = lerp_color(spec.color, (255, 255, 255), GLOW_WHITE_BLEND)
             glow = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
             _draw_arc_segments(
-                glow, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs,
-                alpha=GLOW_ALPHA,
+                glow, px, py, r, width * GLOW_BAND_SCALE, frac,
+                glow_color, glow_color, spec.start_angle, segs, alpha=GLOW_ALPHA,
             )
             img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(GLOW_SOFTNESS * ss)))
 
