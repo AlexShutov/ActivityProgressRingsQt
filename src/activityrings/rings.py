@@ -28,7 +28,7 @@ from PIL import Image, ImageFilter
 
 from common.background import IndicatorBackgroundDrawer
 from common.easing import ease_out_cubic, lerp, lerp_color
-from common.selection import SelectionController
+from common.selection import SELECTION_ACTIVE_EPSILON, SelectionController
 
 from .rings_focus import RingBase
 from .rings_layout import BaseRingsLayoutManager, SelectionRingsLayoutManager
@@ -347,19 +347,14 @@ def render_rings(
         rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
 
     # Выделение (selection): когда менеджер раскладки включает его и передан ``focus`` —
-    # невыделенные кольца гаснут, а активное светится мягким ореолом.  Пороги затемнения
-    # и «какое кольцо активно» общие (``common.selection``) и не зависят от формы.
+    # невыделенные кольца гаснут, а выбранные светятся ореолом.  Пороги затемнения и
+    # «какое кольцо выбрано» общие (``common.selection``) и не зависят от формы.
     focus_values: list[float] = list(focus) if focus is not None else []
     selection_on = bool(
         focus_values and layout_manager is not None and layout_manager.is_selection_enabled
     )
     selection_strength = (
         SelectionController.selection_strength(focus_values) if selection_on else 0.0
-    )
-    active_index = (
-        SelectionController.active_index_of(focus_values, selection_on)
-        if selection_on
-        else None
     )
 
     for index, spec in enumerate(rings):
@@ -392,10 +387,11 @@ def render_rings(
             sh = sh.filter(ImageFilter.GaussianBlur(shadow_softness * ss))
             img.alpha_composite(sh)
 
-        if selection_on and index == active_index:
-            # Яркий ореол вокруг активного кольца: широкая дуга, высветленная к белому
+        if selection_on and ring_focus > SELECTION_ACTIVE_EPSILON:
+            # Яркий ореол вокруг выбранного кольца: широкая дуга, высветленная к белому
             # и размытая (позади чёткой дуги) — «подсветка вокруг» выбранного элемента
-            # читается чётко даже поверх живой темы.
+            # читается чётко даже поверх живой темы.  Ореол появляется/гаснет вместе с
+            # фокусом, поэтому при «пропуске» плавно исчезает.
             glow_color = lerp_color(spec.color, (255, 255, 255), GLOW_WHITE_BLEND)
             glow = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
             _draw_arc_segments(

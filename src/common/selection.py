@@ -86,15 +86,17 @@ class SelectionController:
         self,
         *,
         enabled: bool = True,
+        select_count: int = 2,
         transition_s: float = 0.6,
         ease: Callable[[float], float] = ease_out_cubic,
         rng: random.Random | None = None,
     ) -> None:
         self._enabled = bool(enabled)
+        self._select_count = max(1, int(select_count))
         self._transition_s = float(transition_s)
         self._ease = ease
         self._rng = rng if rng is not None else random.Random()
-        self._active: int | None = None
+        self._active_indices: tuple[int, ...] = ()
         self._should_select = True
         self._window_start = 0.0
         self._window_is_select = False
@@ -110,8 +112,17 @@ class SelectionController:
 
     @property
     def active_index(self) -> int | None:
-        """Индекс подсвеченного элемента (``None`` — нет выделения)."""
-        return self._active
+        """Первый подсвеченный элемент (``None`` — нет выделения).
+
+        Оставляем для совместимости с прежним одиночным API (и тестами): сами
+        индикаторы подсвечивают сразу все ``active_indices``.
+        """
+        return self._active_indices[0] if self._active_indices else None
+
+    @property
+    def active_indices(self) -> tuple[int, ...]:
+        """Индексы подсвеченных в текущем окне данных элементов."""
+        return self._active_indices
 
     @property
     def is_select_window(self) -> bool:
@@ -124,12 +135,13 @@ class SelectionController:
         return self._should_select
 
     def advance(self, now: float, count: int) -> None:
-        """Открывает новое окно данных: через раз выбрать случайный элемент/пропустить."""
+        """Открывает новое окно данных: через раз выбрать случайные элементы/пропустить."""
         if count <= 0 or not self._enabled:
-            self._active = None
+            self._active_indices = ()
             return
         if self._should_select:
-            self._active = self._rng.randrange(count)
+            pick = min(self._select_count, count)
+            self._active_indices = tuple(self._rng.sample(range(count), pick))
             self._window_is_select = True
         else:
             self._window_is_select = False  # предыдущий пульс гаснет в этом окне
@@ -139,29 +151,28 @@ class SelectionController:
     def focus(self, now: float, count: int) -> list[float]:
         """Per-element фокус ``0..1`` в текущем окне данных.
 
-        Если окно «выбранное» — случайный элемент плавно нарастает и держится
-        (фокус ``1.0``) до конца окна; если «пропуск» — предыдущий пульс плавно
-        гаснет и остаётся выключенным.  Так выделение меняется вместе с данными и
-        держится весь показ, а не мигает.
+        Если окно «выбранное» — ``select_count`` случайных элементов плавно нарастают
+        и держатся (фокус ``1.0``) до конца окна; если «пропуск» — предыдущий пульс
+        плавно гаснет и остаётся выключенным.  Так выделение меняется вместе с данными
+        и держится весь показ, а не мигает.
         """
         focus = [0.0] * count
-        if count <= 0 or not self._enabled or self._active is None:
-            return focus
-        if self._active >= count:
-            # Элементов стало меньше под активным пульсом — убираем его (иначе OOB).
-            self._active = None
-            self._window_is_select = False
+        if count <= 0 or not self._enabled or not self._active_indices:
             return focus
         transition = max(SELECTION_ACTIVE_EPSILON, self._transition_s)
         elapsed = now - self._window_start
-        if self._window_is_select:
-            focus[self._active] = (
-                self._ease(elapsed / transition) if elapsed <= transition else 1.0
-            )
-        else:
-            focus[self._active] = (
-                1.0 - self._ease(elapsed / transition) if elapsed <= transition else 0.0
-            )
+        for index in self._active_indices:
+            if index >= count:
+                # Элементов стало меньше под активным пульсом — пропускаем (иначе OOB).
+                continue
+            if self._window_is_select:
+                focus[index] = (
+                    self._ease(elapsed / transition) if elapsed <= transition else 1.0
+                )
+            else:
+                focus[index] = (
+                    1.0 - self._ease(elapsed / transition) if elapsed <= transition else 0.0
+                )
         return focus
 
     @staticmethod
