@@ -26,6 +26,9 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageFilter
 
+from common.background import IndicatorBackgroundDrawer
+from common.easing import ease_out_cubic, lerp, lerp_color
+
 from .rings_focus import RingBase
 from .rings_layout import BaseRingsLayoutManager, SelectionRingsLayoutManager
 
@@ -164,53 +167,46 @@ def render_gauge_rings(
     )
 
 
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
-
-
-def _lerp_c(c1: Color, c2: Color, t: float) -> Color:
-    return (
-        int(_lerp(c1[0], c2[0], t)),
-        int(_lerp(c1[1], c2[1], t)),
-        int(_lerp(c1[2], c2[2], t)),
-    )
-
-
-def ease_out_cubic(t: float) -> float:
-    t = max(0.0, min(1.0, t))
-    return 1.0 - (1.0 - t) ** 3
-
-
-def _pt(cx: float, cy: float, r: float, angle_deg: float) -> tuple[float, float]:
+def _pt(center_x: float, center_y: float, radius: float, angle_deg: float) -> tuple[float, float]:
     rad = math.radians(angle_deg)
-    return cx + r * math.cos(rad), cy + r * math.sin(rad)
+    return center_x + radius * math.cos(rad), center_y + radius * math.sin(rad)
 
 
 def _annulus(
-    cx: float, cy: float, r_in: float, r_out: float, a0: float, a1: float, samples: int = 6
+    center_x: float,
+    center_y: float,
+    radius_inner: float,
+    radius_outer: float,
+    angle_start: float,
+    angle_end: float,
+    samples: int = 6,
 ) -> list[tuple[float, float]]:
     """Polygon points for an annulus sector between two radii (outer then inner)."""
-    pts: list[tuple[float, float]] = []
+    points: list[tuple[float, float]] = []
     for i in range(samples + 1):
-        ang = _lerp(a0, a1, i / samples)
-        rad = math.radians(ang)
-        pts.append((cx + r_out * math.cos(rad), cy + r_out * math.sin(rad)))
+        angle_deg = lerp(angle_start, angle_end, i / samples)
+        rad = math.radians(angle_deg)
+        points.append(
+            (center_x + radius_outer * math.cos(rad), center_y + radius_outer * math.sin(rad))
+        )
     for i in range(samples + 1):
-        ang = _lerp(a0, a1, 1.0 - i / samples)
-        rad = math.radians(ang)
-        pts.append((cx + r_in * math.cos(rad), cy + r_in * math.sin(rad)))
-    return pts
+        angle_deg = lerp(angle_start, angle_end, 1.0 - i / samples)
+        rad = math.radians(angle_deg)
+        points.append(
+            (center_x + radius_inner * math.cos(rad), center_y + radius_inner * math.sin(rad))
+        )
+    return points
 
 
 def _draw_arc_segments(
     layer: Image.Image,
-    cx: float,
-    cy: float,
-    r: float,  # stroke CENTERLINE radius
+    center_x: float,
+    center_y: float,
+    radius: float,  # stroke CENTERLINE radius
     width: float,
     frac: float,
-    c1: Color,
-    c2: Color,
+    color_start: Color,
+    color_end: Color,
     start_angle: float,
     segs: int,
     alpha: int = 255,
@@ -219,41 +215,56 @@ def _draw_arc_segments(
 ) -> None:
     """Draw a swept ring band (gradient) with cap dots centered on the band.
 
-    The band spans ``[r - width/2, r + width/2]`` so the centerline is exactly ``r``;
-    cap dots are circles of radius ``width/2`` drawn at that same radius, so they sit
-    centered on the band (never poke out).
+    The band spans ``[radius - width/2, radius + width/2]`` so the centerline is exactly
+    ``radius``; cap dots are circles of radius ``width/2`` drawn at that same radius, so
+    they sit centered on the band (never poke out).
     """
     from PIL import ImageDraw
 
-    d = ImageDraw.Draw(layer)
+    draw = ImageDraw.Draw(layer)
     sweep = 360.0 * max(0.0, min(frac, 1.0))
     if sweep <= 0:
         return
-    r_in = r - width / 2.0
-    r_out = r + width / 2.0
+    radius_inner = radius - width / 2.0
+    radius_outer = radius + width / 2.0
     end_angle = start_angle + sweep
     for i in range(segs):
-        t = (i + 0.5) / segs
-        a0 = _lerp(start_angle, end_angle, i / segs)
-        a1 = _lerp(start_angle, end_angle, (i + 1) / segs) + 0.5  # overlap avoids seams
-        col = _lerp_c(c1, c2, t) + (alpha,)
-        d.polygon(_annulus(cx, cy, r_in, r_out, a0, a1), fill=col)
+        segment_frac = (i + 0.5) / segs
+        angle_start = lerp(start_angle, end_angle, i / segs)
+        angle_end = lerp(start_angle, end_angle, (i + 1) / segs) + 0.5  # overlap avoids seams
+        col = lerp_color(color_start, color_end, segment_frac) + (alpha,)
+        draw.polygon(
+            _annulus(center_x, center_y, radius_inner, radius_outer, angle_start, angle_end),
+            fill=col,
+        )
     if caps:
-        rr = width / 2.0
-        for ang, cap_col in ((start_angle, c1), (end_angle, c2)):
-            px, py = _pt(cx, cy, r, ang)
-            d.ellipse([px - rr, py - rr, px + rr, py + rr], fill=cap_col + (alpha,))
+        cap_radius = width / 2.0
+        for angle_deg, cap_col in ((start_angle, color_start), (end_angle, color_end)):
+            px, py = _pt(center_x, center_y, radius, angle_deg)
+            draw.ellipse(
+                [px - cap_radius, py - cap_radius, px + cap_radius, py + cap_radius],
+                fill=cap_col + (alpha,),
+            )
 
 
 def _draw_backdrop(
-    layer: Image.Image, cx: float, cy: float, r: float, width: float, color: Color, alpha: int
+    layer: Image.Image,
+    center_x: float,
+    center_y: float,
+    radius: float,
+    width: float,
+    color: Color,
+    alpha: int,
 ) -> None:
     from PIL import ImageDraw
 
-    d = ImageDraw.Draw(layer)
-    r_in = r - width / 2.0
-    r_out = r + width / 2.0
-    d.polygon(_annulus(cx, cy, r_in, r_out, 0, 360, samples=64), fill=color + (alpha,))
+    draw = ImageDraw.Draw(layer)
+    radius_inner = radius - width / 2.0
+    radius_outer = radius + width / 2.0
+    draw.polygon(
+        _annulus(center_x, center_y, radius_inner, radius_outer, 0, 360, samples=64),
+        fill=color + (alpha,),
+    )
 
 
 def render_rings(
@@ -294,8 +305,8 @@ def render_rings(
 
     canvas_w = int(w * ss)
     canvas_h = int(h * ss)
-    canvas_background = (0, 0, 0, 0) if transparent else (16, 18, 24, 255)
-    img = Image.new("RGBA", (canvas_w, canvas_h), canvas_background)
+    drawer = IndicatorBackgroundDrawer(transparent=transparent)
+    img = Image.new("RGBA", (canvas_w, canvas_h), drawer.rgba)
     px, py = cx * ss, cy * ss
     if layout_manager is not None:
         result = layout_manager.measure(min(w, h), None, focus)

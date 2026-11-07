@@ -35,19 +35,15 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
 )
 
+from common.background import DEFAULT_BACKGROUND, IndicatorBackgroundDrawer
+
 from .linear_focus import BASE_BARS, GAP_FRACTION, FocusFrame
 
 DEFAULT_FOCUS_COLOR: tuple[int, int, int] = (0, 200, 90)
-DEFAULT_BACKGROUND: tuple[int, int, int] = (16, 18, 24)
 
 
 def qcolor(color: tuple[int, int, int]) -> QColor:
     return QColor(*color)
-
-
-def _lerp_frac(value: float, a: float, b: float) -> float:
-    value = max(0.0, min(1.0, value))
-    return a + (b - a) * value
 
 
 class LinearItem(QGraphicsObject):
@@ -308,7 +304,7 @@ def render(
             if isinstance(item, LinearItem):
                 item.set_focus_color(focus_color)
     img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-    img.fill(QColor(*background))
+    IndicatorBackgroundDrawer(background).fill_qimage(img)
     p = QPainter(img)
     scene.render(p)
     p.end()
