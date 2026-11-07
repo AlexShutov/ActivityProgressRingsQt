@@ -440,7 +440,12 @@ def render_rings(
     *,
     center: tuple[float, float] | None = None,
     outer_radius: float | None = None,
-    ss: int = 2,
+    # Supersample factor for the PIL polygon fill (Pillow has no antialiased
+    # polygon).  2 left a hard ~1px stair-step on the ring edges at the panel's
+    # 440px ring zone -- most visible on a saturated (red) arc over a dark theme.
+    # 3 gives a clean ~6px ramp with the LANCZOS downscale (measured: ss=4 ramps
+    # start blockier than 3), at 2.25x the ss=2 pixel cost per ring frame.
+    ss: int = 3,
     shadow_softness: float = 6.0,
     shadow_offset: float = 5.0,
     segs: int = 90,
