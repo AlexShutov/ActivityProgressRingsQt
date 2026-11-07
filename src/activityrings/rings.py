@@ -57,6 +57,9 @@ GLOW_ALPHA = 190
 GLOW_BAND_SCALE = 1.8
 GLOW_WHITE_BLEND = 0.5
 
+# Точки на одну дугу скругления конца сектора (чем больше — тем глаже филет).
+CORNER_SAMPLES = 8
+
 
 @dataclass(frozen=True)
 class RingSpec:
@@ -69,12 +72,20 @@ class RingSpec:
     start_angle: float = -90.0  # 12 o'clock
     backdrop_alpha: int = 38  # ~15% track
     shadow: bool = True
+    # Скругление концов сектора как ДОЛЯ толщины (0..0.5): ``start_corner_fraction``
+    # — начало сектора, ``end_corner_fraction`` — конец.  0.5 → круглый конец капсулы,
+    # 0 → плоская (радиальная) кромка.
+    start_corner_fraction: float = 0.5
+    end_corner_fraction: float = 0.5
 
 
 def build_rings(
     outer_radius: float,
     width: float,
     targets: dict[str, float] | None = None,
+    *,
+    start_corner_fraction: float = 0.5,
+    end_corner_fraction: float = 0.5,
 ) -> list[RingSpec]:
     """Three concentric rings from the outer radius inward (outer -> inner)."""
     targets = targets or _DEFAULT_TARGETS
@@ -95,6 +106,8 @@ def build_rings(
             start_angle=spec.start_angle,
             backdrop_alpha=spec.backdrop_alpha,
             shadow=spec.shadow,
+            start_corner_fraction=start_corner_fraction,
+            end_corner_fraction=end_corner_fraction,
         )
         for spec in specs
     ]
@@ -144,6 +157,8 @@ def render_gauge_rings(
     gap_px: float | None = None,
     inner_radius_px: float | None = None,
     track_color: Color | None = None,
+    start_corner_fraction: float = 0.5,
+    end_corner_fraction: float = 0.5,
     **render_kwargs,
 ) -> Image.Image:
     """Рендерит кадр «кольцо на датчик» (``gauges``) через ``render_rings``.
@@ -176,13 +191,10 @@ def render_gauge_rings(
         focus=focus,
         transparent=True,
         track_color=track_color,
+        start_corner_fraction=start_corner_fraction,
+        end_corner_fraction=end_corner_fraction,
         **render_kwargs,
     )
-
-
-def _pt(center_x: float, center_y: float, radius: float, angle_deg: float) -> tuple[float, float]:
-    rad = math.radians(angle_deg)
-    return center_x + radius * math.cos(rad), center_y + radius * math.sin(rad)
 
 
 def _annulus(
@@ -211,6 +223,153 @@ def _annulus(
     return points
 
 
+def _point_at_angle(
+    center_x: float, center_y: float, radius: float, angle_rad: float
+) -> tuple[float, float]:
+    """Точка на окружности ``radius`` вокруг ``(center_x, center_y)`` под углом (рад)."""
+    return (
+        center_x + radius * math.cos(angle_rad),
+        center_y + radius * math.sin(angle_rad),
+    )
+
+
+def _arc_points(
+    center_x: float,
+    center_y: float,
+    radius: float,
+    a_start: float,
+    a_end: float,
+    samples: int,
+) -> list[tuple[float, float]]:
+    """Точки дуги радиуса ``radius`` от ``a_start`` до ``a_end`` (рад)."""
+    return [
+        _point_at_angle(center_x, center_y, radius, lerp(a_start, a_end, i / samples))
+        for i in range(samples + 1)
+    ]
+
+
+def _fillet_arc_points(
+    center_radius: float,
+    center_angle: float,
+    corner_radius: float,
+    p_boundary: tuple[float, float],
+    p_line: tuple[float, float],
+    center_x: float,
+    center_y: float,
+    samples: int,
+) -> list[tuple[float, float]]:
+    """Дуга скругления между границей полосы и радиальной кромкой конца сектора.
+
+    Центр филета лежит на радиусе ``center_radius`` под углом ``center_angle`` (от
+    центра полосы); ``p_boundary``/``p_line`` — точки касания с границей и кромкой.
+    Возвращает точки короткой дуги от ``p_boundary`` к ``p_line``.
+    """
+    center_x_fillet = center_x + center_radius * math.cos(center_angle)
+    center_y_fillet = center_y + center_radius * math.sin(center_angle)
+    phi_boundary = math.atan2(p_boundary[1] - center_y_fillet, p_boundary[0] - center_x_fillet)
+    phi_line = math.atan2(p_line[1] - center_y_fillet, p_line[0] - center_x_fillet)
+    sweep = (phi_line - phi_boundary + math.pi) % (2.0 * math.pi) - math.pi
+    return [
+        (
+            center_x_fillet + corner_radius * math.cos(phi_boundary + sweep * i / samples),
+            center_y_fillet + corner_radius * math.sin(phi_boundary + sweep * i / samples),
+        )
+        for i in range(samples + 1)
+    ]
+
+
+def _rounded_band_points(
+    center_x: float,
+    center_y: float,
+    radius: float,
+    width: float,
+    sweep_deg: float,
+    start_deg: float,
+    start_corner_fraction: float,
+    end_corner_fraction: float,
+    corner_samples: int = CORNER_SAMPLES,
+) -> list[tuple[float, float]]:
+    """Контур кольцевой полосы со скруглёнными концами сектора.
+
+    Полоса лежит в ``[radius - width/2, radius + width/2]`` (центр — ``radius``).
+    Концы скругляются как ДОЛЯ толщины (0..0.5): ``start_corner_fraction`` — угол
+    ``start_deg`` (начало сектора), ``end_corner_fraction`` — конец.  При 0.5 оба
+    филета сливаются в круглый конец-капсулу, при 0 — плоские радиальные кромки.
+    Возвращает упорядоченные точки контура (Pillow ``draw.polygon``).
+    """
+    radius_inner = radius - width / 2.0
+    radius_outer = radius + width / 2.0
+    th0 = math.radians(start_deg)
+    th1 = th0 + math.radians(sweep_deg)
+    start_corner = min(max(0.0, start_corner_fraction), 0.5) * width
+    end_corner = min(max(0.0, end_corner_fraction), 0.5) * width
+
+    def corner(boundary_radius: float, corner_width: float, line_angle: float, at_start: bool):
+        """Точки касания скругления границы ``boundary_radius`` и кромки ``line_angle``.
+
+        Возвращает ``(boundary_angle, line_radius, centre_radius)``: угол касания на
+        границе, радиус касания на кромке и радиус центра филета.  При ``corner_width``
+        <= 0 угла нет — граница встречает кромку в ``boundary_radius``.
+        """
+        if corner_width <= 1e-9:
+            return line_angle, boundary_radius, boundary_radius
+        if boundary_radius >= radius:
+            centre_radius = boundary_radius - corner_width
+        else:
+            centre_radius = boundary_radius + corner_width
+        if centre_radius <= 1e-9:
+            # Патологический случай (толщина больше радиуса): филет вырождается —
+            # возвращаем плоскую кромку, как для corner_width <= 0.
+            return line_angle, boundary_radius, boundary_radius
+        delta = math.asin(min(1.0, max(0.0, corner_width / centre_radius)))
+        boundary_angle = line_angle + (delta if at_start else -delta)
+        return boundary_angle, centre_radius * math.cos(delta), centre_radius
+
+    start_outer = corner(radius_outer, start_corner, th0, True)
+    end_outer = corner(radius_outer, end_corner, th1, False)
+    start_inner = corner(radius_inner, start_corner, th0, True)
+    end_inner = corner(radius_inner, end_corner, th1, False)
+
+    arc_samples = max(corner_samples, int(abs(sweep_deg) / 3.0))
+    points = _arc_points(
+        center_x, center_y, radius_outer, start_outer[0], end_outer[0], arc_samples,
+    )
+    if end_corner > 0:
+        points += _fillet_arc_points(
+            end_outer[2], end_outer[0], end_corner,
+            _point_at_angle(center_x, center_y, radius_outer, end_outer[0]),
+            _point_at_angle(center_x, center_y, end_outer[1], th1),
+            center_x, center_y, corner_samples,
+        )
+    points.append(_point_at_angle(center_x, center_y, end_inner[1], th1))
+    if end_corner > 0:
+        points += _fillet_arc_points(
+            end_inner[2], end_inner[0], end_corner,
+            _point_at_angle(center_x, center_y, end_inner[1], th1),
+            _point_at_angle(center_x, center_y, radius_inner, end_inner[0]),
+            center_x, center_y, corner_samples,
+        )
+    points += _arc_points(
+        center_x, center_y, radius_inner, end_inner[0], start_inner[0], arc_samples,
+    )
+    if start_corner > 0:
+        points += _fillet_arc_points(
+            start_inner[2], start_inner[0], start_corner,
+            _point_at_angle(center_x, center_y, radius_inner, start_inner[0]),
+            _point_at_angle(center_x, center_y, start_inner[1], th0),
+            center_x, center_y, corner_samples,
+        )
+    points.append(_point_at_angle(center_x, center_y, start_outer[1], th0))
+    if start_corner > 0:
+        points += _fillet_arc_points(
+            start_outer[2], start_outer[0], start_corner,
+            _point_at_angle(center_x, center_y, start_outer[1], th0),
+            _point_at_angle(center_x, center_y, radius_outer, start_outer[0]),
+            center_x, center_y, corner_samples,
+        )
+    return points
+
+
 def _draw_arc_segments(
     layer: Image.Image,
     center_x: float,
@@ -224,13 +383,17 @@ def _draw_arc_segments(
     segs: int,
     alpha: int = 255,
     *,
-    caps: bool = True,
+    start_corner_fraction: float = 0.5,
+    end_corner_fraction: float = 0.5,
 ) -> None:
-    """Draw a swept ring band (gradient) with cap dots centered on the band.
+    """Рисует кольцевую полосу с настраиваемым скруглением концов сектора.
 
-    The band spans ``[radius - width/2, radius + width/2]`` so the centerline is exactly
-    ``radius``; cap dots are circles of radius ``width/2`` drawn at that same radius, so
-    they sit centered on the band (never poke out).
+    Полоса лежит в ``[radius - width/2, radius + width/2]`` (центральная линия —
+    ``radius``).  ``start_corner_fraction``/``end_corner_fraction`` — скругление
+    начала и конца сектора как доля толщины (0..0.5); 0.5 → круглый конец, 0 →
+    плоская кромка.  ``segs`` сохраняется для совместимости API и задаёт сглаживание
+    (число точек на дугу).  ``color_end`` резервирован под градиент; в текущих
+    вызовах начало и конец одного цвета.
     """
     from PIL import ImageDraw
 
@@ -238,26 +401,12 @@ def _draw_arc_segments(
     sweep = 360.0 * max(0.0, min(frac, 1.0))
     if sweep <= 0:
         return
-    radius_inner = radius - width / 2.0
-    radius_outer = radius + width / 2.0
-    end_angle = start_angle + sweep
-    for i in range(segs):
-        segment_frac = (i + 0.5) / segs
-        angle_start = lerp(start_angle, end_angle, i / segs)
-        angle_end = lerp(start_angle, end_angle, (i + 1) / segs) + 0.5  # overlap avoids seams
-        col = lerp_color(color_start, color_end, segment_frac) + (alpha,)
-        draw.polygon(
-            _annulus(center_x, center_y, radius_inner, radius_outer, angle_start, angle_end),
-            fill=col,
-        )
-    if caps:
-        cap_radius = width / 2.0
-        for angle_deg, cap_col in ((start_angle, color_start), (end_angle, color_end)):
-            px, py = _pt(center_x, center_y, radius, angle_deg)
-            draw.ellipse(
-                [px - cap_radius, py - cap_radius, px + cap_radius, py + cap_radius],
-                fill=cap_col + (alpha,),
-            )
+    points = _rounded_band_points(
+        center_x, center_y, radius, width, sweep, start_angle,
+        start_corner_fraction, end_corner_fraction,
+        corner_samples=max(3, int(segs / 8)),
+    )
+    draw.polygon(points, fill=color_start + (alpha,))
 
 
 def _draw_backdrop(
@@ -294,6 +443,8 @@ def render_rings(
     focus: Sequence[float] | None = None,
     transparent: bool = False,
     track_color: Color | None = None,
+    start_corner_fraction: float = 0.5,
+    end_corner_fraction: float = 0.5,
 ) -> Image.Image:
     """Render one frame of the three Activity Rings.
 
@@ -340,11 +491,17 @@ def render_rings(
                 start_angle=g.start_angle,
                 backdrop_alpha=g.backdrop_alpha,
                 shadow=g.shadow,
+                start_corner_fraction=start_corner_fraction,
+                end_corner_fraction=end_corner_fraction,
             )
             for g in result.geometry
         ]
     else:
-        rings = build_rings(radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS)
+        rings = build_rings(
+            radius * ss, radius * 0.18 * ss, targets or _DEFAULT_TARGETS,
+            start_corner_fraction=start_corner_fraction,
+            end_corner_fraction=end_corner_fraction,
+        )
 
     # Выделение (selection): когда менеджер раскладки включает его и передан ``focus`` —
     # невыделенные кольца гаснут, а выбранные светятся ореолом.  Пороги затемнения и
@@ -378,6 +535,8 @@ def render_rings(
         _draw_arc_segments(
             sil, px, py, r, width, frac, spec.color, spec.color, spec.start_angle, segs,
             alpha=arc_alpha,
+            start_corner_fraction=spec.start_corner_fraction,
+            end_corner_fraction=spec.end_corner_fraction,
         )
 
         if spec.shadow:
@@ -397,6 +556,8 @@ def render_rings(
             _draw_arc_segments(
                 glow, px, py, r, width * GLOW_BAND_SCALE, frac,
                 glow_color, glow_color, spec.start_angle, segs, alpha=GLOW_ALPHA,
+                start_corner_fraction=spec.start_corner_fraction,
+                end_corner_fraction=spec.end_corner_fraction,
             )
             img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(GLOW_SOFTNESS * ss)))
 
