@@ -102,6 +102,20 @@ def test_drawer_custom_opaque_color():
     assert not drawer.transparent
 
 
+def test_drawer_backdrop_is_uniform_transparent_version_of_background():
+    """Подложка-трек — единый цвет фона с заданной альфой, независимо от прозрачности."""
+    drawer = IndicatorBackgroundDrawer()
+    assert drawer.backdrop(38) == (*DEFAULT_BACKGROUND, 38)
+    assert drawer.backdrop(40) == (*DEFAULT_BACKGROUND, 40)
+
+    custom = IndicatorBackgroundDrawer((138, 147, 166))
+    assert custom.backdrop(38) == (138, 147, 166, 38)
+
+    overlay = IndicatorBackgroundDrawer(transparent=True)
+    assert overlay.backdrop(38) == (*DEFAULT_BACKGROUND, 38)
+    assert overlay.rgba == (0, 0, 0, 0)
+
+
 def test_drawer_fill_image_pillow():
     from PIL import Image
 

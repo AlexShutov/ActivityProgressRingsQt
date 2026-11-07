@@ -28,11 +28,19 @@ class IndicatorBackgroundDrawer:
         *,
         transparent: bool = False,
     ) -> None:
+        # Стабильный цвет фона (не зависит от прозрачности): из него выводится и
+        # заливка канвы, и полупрозрачная подложка-трек ``backdrop``.
+        background_rgb = DEFAULT_BACKGROUND if background is None else tuple(background)
+        self._rgb: tuple[int, int, int] = (
+            int(background_rgb[0]),
+            int(background_rgb[1]),
+            int(background_rgb[2]),
+        )
+        self._transparent = bool(transparent)
         if transparent:
             self._rgba: tuple[int, int, int, int] = (0, 0, 0, 0)
         else:
-            rgb = DEFAULT_BACKGROUND if background is None else tuple(background)
-            self._rgba = (rgb[0], rgb[1], rgb[2], 255)
+            self._rgba = (*self._rgb, 255)
 
     @property
     def rgba(self) -> tuple[int, int, int, int]:
@@ -41,13 +49,24 @@ class IndicatorBackgroundDrawer:
 
     @property
     def rgb(self) -> tuple[int, int, int]:
-        """RGB-цвет фона (для непрозрачных бэкендов)."""
-        return self._rgba[:3]
+        """RGB-цвет фона (стабильный, независимо от прозрачности)."""
+        return self._rgb
 
     @property
     def transparent(self) -> bool:
         """Истина, если фон прозрачный (оверлей)."""
-        return self._rgba[3] == 0
+        return self._transparent
+
+    def backdrop(self, alpha: int) -> tuple[int, int, int, int]:
+        """Полупрозрачная подложка (трек) — «более прозрачная версия фона».
+
+        Единый нейтральный цвет для всех элементов виджета (по умолчанию — сам
+        цвет фона), чтобы фон под каждой полосой/кольцом не был разноцветным.
+        Кольца рисуют им задний фон каждого кольца; композитный дашборд передаёт
+        тот же нейтральный ``palette["muted"]`` и в кольца, и в подложку линейного
+        индикатора, поэтому фон обоих виджетов совпадает.
+        """
+        return (*self._rgb, int(alpha))
 
     def fill_image(self, image) -> None:
         """Заливает весь фон в Pillow RGBA-изображении ``image`` (in-place)."""

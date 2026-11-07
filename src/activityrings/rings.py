@@ -132,6 +132,7 @@ def render_gauge_rings(
     edge_margin: float = 14.0,
     gap_px: float | None = None,
     inner_radius_px: float | None = None,
+    track_color: Color | None = None,
     **render_kwargs,
 ) -> Image.Image:
     """Рендерит кадр «кольцо на датчик» (``gauges``) через ``render_rings``.
@@ -163,6 +164,7 @@ def render_gauge_rings(
         layout_manager=manager,
         focus=focus,
         transparent=True,
+        track_color=track_color,
         **render_kwargs,
     )
 
@@ -253,8 +255,7 @@ def _draw_backdrop(
     center_y: float,
     radius: float,
     width: float,
-    color: Color,
-    alpha: int,
+    backdrop_color: tuple[int, int, int, int],
 ) -> None:
     from PIL import ImageDraw
 
@@ -263,7 +264,7 @@ def _draw_backdrop(
     radius_outer = radius + width / 2.0
     draw.polygon(
         _annulus(center_x, center_y, radius_inner, radius_outer, 0, 360, samples=64),
-        fill=color + (alpha,),
+        fill=backdrop_color,
     )
 
 
@@ -281,6 +282,7 @@ def render_rings(
     layout_manager: BaseRingsLayoutManager | None = None,
     focus: Sequence[float] | None = None,
     transparent: bool = False,
+    track_color: Color | None = None,
 ) -> Image.Image:
     """Render one frame of the three Activity Rings.
 
@@ -298,6 +300,12 @@ def render_rings(
     ``transparent`` returns an RGBA overlay (transparent canvas) so the caller can
     alpha-composite the rings over a live theme; by default the frame is opaque RGB with
     a solid dark backdrop (standalone use).
+
+    ``track_color`` — единый нейтральный цвет подложки (заднего фона) всех колец.
+    По умолчанию (``None``) это сам ``DEFAULT_BACKGROUND``: фон каждого кольца — «более
+    прозрачная версия фона», а не цвет самого кольца, поэтому фоны не разноцветные.
+    Композит передаёт сюда ``palette["muted"]``, чтобы цвет трека совпадал с
+    подложкой линейного индикатора.
     """
     w, h = size
     cx, cy = (w / 2.0, h / 2.0) if center is None else center
@@ -305,7 +313,7 @@ def render_rings(
 
     canvas_w = int(w * ss)
     canvas_h = int(h * ss)
-    drawer = IndicatorBackgroundDrawer(transparent=transparent)
+    drawer = IndicatorBackgroundDrawer(track_color, transparent=transparent)
     img = Image.new("RGBA", (canvas_w, canvas_h), drawer.rgba)
     px, py = cx * ss, cy * ss
     if layout_manager is not None:
@@ -334,7 +342,9 @@ def render_rings(
         frac = max(0.0, frac)
 
         if spec.backdrop_alpha:
-            _draw_backdrop(img, px, py, r, width, spec.color, spec.backdrop_alpha)
+            _draw_backdrop(
+                img, px, py, r, width, drawer.backdrop(spec.backdrop_alpha)
+            )
 
         sil = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
         _draw_arc_segments(
