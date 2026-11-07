@@ -8,7 +8,9 @@
   расписание, прогресс-трек);
 - ``background`` — единый фон позади индикатора (``IndicatorBackgroundDrawer``);
 - ``selection`` — общая модель выделения (драйвер «какой элемент подсвечен»,
-  затемнение, стратегия).
+  затемнение, стратегия);
+- ``font`` / ``font_size`` — выбор шрифта (``FontResolver``) и подбор максимального
+  кегля под габариты (``FontSizeCalculator``).
 
 Ни один из модулей не тянет Qt/Pillow на импорте, поэтому ``common`` остаётся
 лёгким и headless-пригодным (как и focus-модели индикаторов).
@@ -28,6 +30,12 @@ from .focus import (
     layout,
     progress_track,
     seed_progress_targets,
+)
+from .font import DEFAULT_FONT_FAMILY, FontResolver, FontSpec
+from .font_size import (
+    DEFAULT_FONT_SIZE_MAX,
+    DEFAULT_FONT_SIZE_MIN,
+    FontSizeCalculator,
 )
 from .selection import (
     SELECTION_ACTIVE_EPSILON,
@@ -59,6 +67,13 @@ __all__ = [
     # background
     "DEFAULT_BACKGROUND",
     "IndicatorBackgroundDrawer",
+    # font
+    "DEFAULT_FONT_FAMILY",
+    "FontResolver",
+    "FontSpec",
+    "DEFAULT_FONT_SIZE_MAX",
+    "DEFAULT_FONT_SIZE_MIN",
+    "FontSizeCalculator",
     # selection
     "SELECTION_ACTIVE_EPSILON",
     "SELECTION_DIM_MIN",
