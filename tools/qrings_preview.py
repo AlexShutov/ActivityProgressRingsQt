@@ -250,29 +250,33 @@ class RingItem(QGraphicsObject):
         """
         core = max(1.5, self._w * 0.03)
 
-        ri = self._r - self._w / 2.0
-        ro = self._r + self._w / 2.0
+        radius_inner = self._r - self._w / 2.0
+        radius_outer = self._r + self._w / 2.0
         sign = -1.0 if self._direction == "clockwise" else 1.0
         base = self._start + self._rotation
-        a0 = base
-        a1 = base + sign * self._sweep
+        angle_start = base
+        angle_end = base + sign * self._sweep
         cap_span = sign * 180.0
 
-        outer_rect = QRectF(-ro, -ro, 2 * ro, 2 * ro)
-        inner_rect = QRectF(-ri, -ri, 2 * ri, 2 * ri)
+        outer_rect = QRectF(-radius_outer, -radius_outer, 2 * radius_outer, 2 * radius_outer)
+        inner_rect = QRectF(-radius_inner, -radius_inner, 2 * radius_inner, 2 * radius_inner)
 
         # Rounded caps: half-discs (diameter w) centered on the band when it is cut.
-        cap1 = self._arc_point(self._r, a1)
-        cap0 = self._arc_point(self._r, a0)
-        cap1_rect = QRectF(cap1.x() - self._w / 2.0, cap1.y() - self._w / 2.0, self._w, self._w)
-        cap0_rect = QRectF(cap0.x() - self._w / 2.0, cap0.y() - self._w / 2.0, self._w, self._w)
+        cap_end = self._arc_point(self._r, angle_end)
+        cap_start = self._arc_point(self._r, angle_start)
+        cap_end_rect = QRectF(
+            cap_end.x() - self._w / 2.0, cap_end.y() - self._w / 2.0, self._w, self._w
+        )
+        cap_start_rect = QRectF(
+            cap_start.x() - self._w / 2.0, cap_start.y() - self._w / 2.0, self._w, self._w
+        )
 
         path = QPainterPath()
-        path.arcMoveTo(outer_rect, a0)
-        path.arcTo(outer_rect, a0, sign * self._sweep)
-        path.arcTo(cap1_rect, a1, cap_span)
-        path.arcTo(inner_rect, a1, -sign * self._sweep)
-        path.arcTo(cap0_rect, a0 + 180.0, cap_span)
+        path.arcMoveTo(outer_rect, angle_start)
+        path.arcTo(outer_rect, angle_start, sign * self._sweep)
+        path.arcTo(cap_end_rect, angle_end, cap_span)
+        path.arcTo(inner_rect, angle_end, -sign * self._sweep)
+        path.arcTo(cap_start_rect, angle_start + 180.0, cap_span)
         path.closeSubpath()
 
         # Soft glow: wide, faint passes spreading outward from the outline line.

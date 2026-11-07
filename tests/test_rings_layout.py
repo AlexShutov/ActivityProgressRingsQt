@@ -57,10 +57,10 @@ def test_outer_radius_obeys_fraction_override():
 def test_gap_decreases_with_count():
     mgr = StaticRingsLayoutManager()
     short = 760.0
-    g3 = mgr.gap_for(short, 3)
-    g6 = mgr.gap_for(short, 6)
-    g12 = mgr.gap_for(short, 12)
-    assert g3 > g6 > g12
+    gap_3 = mgr.gap_for(short, 3)
+    gap_6 = mgr.gap_for(short, 6)
+    gap_12 = mgr.gap_for(short, 12)
+    assert gap_3 > gap_6 > gap_12
 
 
 def test_gap_clamped_to_bounds():
